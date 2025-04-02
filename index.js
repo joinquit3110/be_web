@@ -11,8 +11,8 @@ const app = express();
 
 // Đơn giản hóa CORS
 app.use(cors({
-  origin: ['https://fe-hung.vercel.app', "*"], // Chỉ cho phép frontend của bạn truy cập
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', "*"],
+  origin: ['https://fe-hung.vercel.app'], // Chỉ cho phép frontend của bạn truy cập
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', '*'],
 }));
 app.use(express.json());
