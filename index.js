@@ -11,7 +11,7 @@ const app = express();
 
 // Đơn giản hóa CORS
 app.use(cors({
-  origin: ['https://inequality-web.vercel.app', "*"], // Chỉ cho phép frontend của bạn truy cập
+  origin: ['https://fe-hung.vercel.app', "*"], // Chỉ cho phép frontend của bạn truy cập
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', "*"],
   allowedHeaders: ['Content-Type', 'Authorization', '*'],
 }));
