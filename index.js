@@ -14,6 +14,7 @@ app.use(cors({
   origin: ['https://fe-web-lilac.vercel.app'], // Chỉ cho phép frontend của bạn truy cập
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization', '*'],
+  credentials: true, // Cho phép cookie
 }));
 app.use(express.json());
 
