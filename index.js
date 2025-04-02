@@ -27,11 +27,13 @@ mongoose.connect(process.env.MONGODB_URI, {
   },
   useNewUrlParser: true,
   useUnifiedTopology: true,
+  serverSelectionTimeoutMS: 30000, // Thời gian chờ server selection là 30 giây
+  socketTimeoutMS: 45000, // Thời gian chờ socket là 45 giây
 })
 .then(() => console.log("Successfully connected to MongoDB Atlas!"))
 .catch(err => {
   console.error("MongoDB connection error:", err);
-  process.exit(1);
+  process.exit(1); // Dừng chương trình nếu không thể kết nối
 });
 
 // Add version prefix to all routes
