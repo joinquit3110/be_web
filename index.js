@@ -32,8 +32,8 @@ mongoose.connect(process.env.MONGODB_URI, {
 })
 .then(() => console.log("Successfully connected to MongoDB Atlas!"))
 .catch(err => {
-  console.error("MongoDB connection error:", err);
-  process.exit(1); // Dừng chương trình nếu không thể kết nối
+  console.error('MongoDB connection error:', err);
+  process.exit(1); // Stop the program if connection fails
 });
 
 // Add version prefix to all routes
