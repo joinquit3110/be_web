@@ -1,107 +1,89 @@
 require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
+const { MongoClient, ServerApiVersion } = require('mongodb');
 const cors = require('cors');
-const helmet = require('helmet');
-const compression = require('compression');
-const morgan = require('morgan');
-const rateLimit = require('express-rate-limit');
-const winston = require('winston');
-
 const authRoutes = require('./routes/auth');
 const scoreRoutes = require('./routes/scores');
+const path = require('path');
 
 const app = express();
 
-// Configure logging
-const logger = winston.createLogger({
-  level: 'info',
-  format: winston.format.combine(
-    winston.format.timestamp(),
-    winston.format.json()
-  ),
-  transports: [
-    new winston.transports.File({ filename: 'error.log', level: 'error' }),
-    new winston.transports.File({ filename: 'combined.log' })
-  ]
+// Đơn giản hóa CORS
+app.use(cors({
+  origin: ['https://fe-web-lilac.vercel.app'], // Chỉ cho phép frontend của bạn truy cập
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization', '*'],
+  credentials: true, // Cho phép cookie
+}));
+app.use(express.json());
+
+// Connect to MongoDB with updated configuration
+mongoose.connect(process.env.MONGODB_URI, {
+  serverApi: {
+    version: ServerApiVersion.v1,
+    strict: true,
+    deprecationErrors: true,
+  },
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+  serverSelectionTimeoutMS: 30000, // Thời gian chờ server selection là 30 giây
+  socketTimeoutMS: 45000, // Thời gian chờ socket là 45 giây
+})
+.then(() => console.log("Successfully connected to MongoDB Atlas!"))
+.catch(err => {
+  console.error("MongoDB connection error:", err);
+  process.exit(1); // Dừng chương trình nếu không thể kết nối
 });
 
-if (process.env.NODE_ENV !== 'production') {
-  logger.add(new winston.transports.Console({
-    format: winston.format.simple()
-  }));
+// Add version prefix to all routes
+const API_PREFIX = '/api';
+
+// Serve static files from uploads
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
+// Serve the React frontend in production
+if (process.env.NODE_ENV === 'production') {
+  app.use(express.static(path.join(__dirname, 'public')));
+  
+  // Handle React routing, return all requests to React app
+  app.get('*', (req, res, next) => {
+    if (req.url.startsWith('/api')) {
+      return next();
+    }
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+  });
 }
 
-// Security middleware
-app.use(helmet());
-app.use(cors({
-  origin: ['https://fe-web-lilac.vercel.app'],
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true
-}));
-
-// Rate limiting
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100 // limit each IP to 100 requests per windowMs
-});
-app.use(limiter);
-
-// Compression
-app.use(compression());
-
-// Logging
-app.use(morgan('combined', { stream: { write: message => logger.info(message) } }));
-
-// Body parsing
-app.use(express.json({ limit: '10kb' }));
-app.use(express.urlencoded({ extended: true, limit: '10kb' }));
-
-// MongoDB connection with retry logic
-const connectWithRetry = async () => {
-  try {
-    await mongoose.connect(process.env.MONGODB_URI, {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
-      serverSelectionTimeoutMS: 30000,
-      socketTimeoutMS: 45000
-    });
-    logger.info('Successfully connected to MongoDB Atlas!');
-  } catch (err) {
-    logger.error('MongoDB connection error:', err);
-    setTimeout(connectWithRetry, 5000);
-  }
-};
-
-connectWithRetry();
-
-// API routes
-const API_PREFIX = '/api';
+// Routes with prefix
 app.use(`${API_PREFIX}/auth`, authRoutes);
 app.use(`${API_PREFIX}/scores`, scoreRoutes);
 
-// Health check
+// Add health check route
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'healthy', timestamp: new Date().toISOString() });
+  res.json({ status: 'healthy' });
 });
 
-// Error handling
+// Update error handling
 app.use((err, req, res, next) => {
-  logger.error('Server error:', err);
-  res.status(500).json({
+  console.error('Server error:', err);
+  res.status(500).json({ 
     message: err.message || 'Internal server error',
     stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
   });
 });
 
-// 404 handler
-app.use((req, res) => {
+// Add catch-all route for frontend
+app.get('*', (req, res) => {
   res.status(404).json({ message: 'Not Found' });
 });
 
-// Start server
+// Update server listening
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, '0.0.0.0', () => {
-  logger.info(`Server running on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
+  console.log('Access URLs:');
+  console.log(`- Local: http://localhost:${PORT}`);
+  console.log(`- Network: http://192.168.1.53:${PORT}`);
+  console.log(`- API: http://192.168.1.53:${PORT}/api`);
 });
