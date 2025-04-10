@@ -11,7 +11,7 @@ const app = express();
 
 // Đơn giản hóa CORS
 app.use(cors({
-  origin: ['https://fe-web-lilac.vercel.app'], // Chỉ cho phép frontend của bạn truy cập
+  origin: ['https://fe-web-lilac.vercel.app'], // Frontend URL allowed
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization', '*'],
   credentials: true, // Cho phép cookie
