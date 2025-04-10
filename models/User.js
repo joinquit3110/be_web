@@ -38,7 +38,8 @@ const userSchema = new mongoose.Schema({
   }],
   magicPoints: {
     type: Number,
-    default: 100
+    default: 100,
+    min: 0
   },
   lastMagicPointsUpdate: {
     type: Date,

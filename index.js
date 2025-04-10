@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const { MongoClient, ServerApiVersion } = require('mongodb');
 const cors = require('cors');
 const authRoutes = require('./routes/auth');
+const exerciseRoutes = require('./routes/exercises');
 const scoreRoutes = require('./routes/scores');
 const magicPointsRoutes = require('./routes/magicPoints');
 const path = require('path');
@@ -58,7 +59,8 @@ if (process.env.NODE_ENV === 'production') {
 
 // Routes with prefix
 app.use(`${API_PREFIX}/auth`, authRoutes);
-app.use(`${API_PREFIX}/scores`, scoreRoutes);
+app.use(`${API_PREFIX}/exercises`, exerciseRoutes);
+app.use(`${API_PREFIX}/user/scores`, scoreRoutes);
 app.use(`${API_PREFIX}/user/magic-points`, magicPointsRoutes);
 
 // Add health check route
