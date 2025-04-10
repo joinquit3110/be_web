@@ -11,17 +11,22 @@ const path = require('path');
 
 const app = express();
 
-// Đơn giản hóa CORS
+// Enhanced CORS configuration for better offline/online synchronization
 app.use(cors({
   origin: [
     'https://fe-web-lilac.vercel.app',  // Vercel frontend
     'http://localhost:3000',            // Local development
     'https://inequality-web.vercel.app', // Alternative frontend URL
-    'https://mw15w-5173.csb.app'        // CodeSandbox URL
+    'https://mw15w-5173.csb.app',       // CodeSandbox URL
+    'capacitor://localhost',            // Mobile app via Capacitor
+    'http://localhost',                 // Alternative local development
+    'http://localhost:8080',            // Another common local port
+    'http://localhost:8100',            // Ionic default port
+    '*'                                 // Allow all origins in development (remove in production)
   ],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-  credentials: true, // Cho phép cookie
+  credentials: true, // Allow cookies
   preflightContinue: false,
   optionsSuccessStatus: 204
 }));
@@ -29,10 +34,14 @@ app.use(cors({
 // Set additional headers for better CORS handling
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Allow-Origin', req.headers.origin);
+  res.header('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin,X-Requested-With,Content-Type,Accept,Authorization');
   next();
 });
 
-app.use(express.json());
+// Increase payload size limit for sync operations with many items
+app.use(express.json({ limit: '5mb' }));
 
 // Connect to MongoDB with updated configuration
 console.log('Attempting to connect to MongoDB...');

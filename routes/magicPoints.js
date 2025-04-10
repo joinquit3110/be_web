@@ -32,8 +32,8 @@ router.post('/', auth, async (req, res) => {
       return res.status(400).json({ message: 'Magic points value is required' });
     }
     
-    // Ensure points can't go below 0 or above 1000
-    const validatedPoints = Math.max(0, Math.min(1000, parseInt(magicPoints, 10)));
+    // Ensure points can't go below 0 but remove upper limit
+    const validatedPoints = Math.max(0, parseInt(magicPoints, 10));
     
     const updatedUser = await User.findByIdAndUpdate(
       req.user.id,
@@ -116,8 +116,8 @@ router.post('/sync', auth, async (req, res) => {
         }
       }
       
-      // Ensure points is valid and within reasonable bounds
-      currentPoints = Math.max(0, Math.min(1000, isNaN(currentPoints) ? 100 : currentPoints));
+      // Ensure points can't go below 0 but remove upper limit
+      currentPoints = Math.max(0, isNaN(currentPoints) ? 100 : currentPoints);
       
       // Update user with final value
       await User.findByIdAndUpdate(
