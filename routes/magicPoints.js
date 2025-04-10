@@ -67,11 +67,32 @@ router.post('/sync', auth, async (req, res) => {
     const { operations } = req.body;
     console.log(`[BE] Syncing ${operations?.length || 0} magic point operations for user ${req.user.id}`);
     
-    if (!operations || !Array.isArray(operations)) {
-      console.log('[BE] Invalid operations array in sync request');
-      return res.status(400).json({ message: 'Valid operations array is required' });
+    // More robust validation of the operations array
+    if (!operations || !Array.isArray(operations) || operations.length === 0) {
+      console.log('[BE] Invalid or empty operations array in sync request');
+      return res.status(400).json({ message: 'Valid non-empty operations array is required' });
     }
     
+    // Log the first few operations for debugging
+    const sampleOps = operations.slice(0, 3);
+    console.log(`[BE] Sample operations (showing ${sampleOps.length} of ${operations.length}):`, 
+      JSON.stringify(sampleOps));
+    
+    // Validate operation format
+    const invalidOps = operations.filter(op => 
+      !op.type || !['add', 'remove', 'set'].includes(op.type) || 
+      typeof op.amount !== 'number' || isNaN(op.amount)
+    );
+    
+    if (invalidOps.length > 0) {
+      console.log(`[BE] Found ${invalidOps.length} invalid operations`);
+      return res.status(400).json({ 
+        message: 'Invalid operations format',
+        details: invalidOps.slice(0, 3) // Return a sample of invalid operations
+      });
+    }
+    
+    // Get user and current points
     const user = await User.findById(req.user.id);
     if (!user) {
       console.log(`[BE] User not found when syncing points: ${req.user.id}`);
@@ -84,16 +105,26 @@ router.post('/sync', auth, async (req, res) => {
     // Process operations in order
     for (const op of operations) {
       console.log(`[BE] Processing operation: ${op.type}, amount: ${op.amount}`);
+      
+      // Convert amount to number if it's a string
+      const amount = typeof op.amount === 'string' ? parseFloat(op.amount) : op.amount;
+      
       if (op.type === 'add') {
-        currentPoints += op.amount;
+        currentPoints += amount;
       } else if (op.type === 'remove') {
-        currentPoints = Math.max(0, currentPoints - op.amount);
+        currentPoints = Math.max(0, currentPoints - amount);
       } else if (op.type === 'set') {
-        currentPoints = Math.max(0, op.amount);
+        currentPoints = Math.max(0, amount);
       }
     }
     
     console.log(`[BE] Points after processing operations: ${currentPoints}`);
+    
+    // Ensure points is a valid number
+    if (isNaN(currentPoints)) {
+      console.log(`[BE] Points calculation resulted in NaN, resetting to 100`);
+      currentPoints = 100;
+    }
     
     // Update user with final point value
     const updatedUser = await User.findByIdAndUpdate(
@@ -119,7 +150,10 @@ router.post('/sync', auth, async (req, res) => {
     });
   } catch (err) {
     console.error('[BE] Error syncing magic points:', err);
-    res.status(500).json({ message: err.message });
+    res.status(500).json({ 
+      message: err.message || 'Internal server error during point sync',
+      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined 
+    });
   }
 });
 
