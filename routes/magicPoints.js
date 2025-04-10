@@ -31,8 +31,8 @@ router.post('/', auth, async (req, res) => {
       return res.status(400).json({ message: 'Magic points value is required' });
     }
     
-    // Ensure points can't go below 0
-    const validatedPoints = Math.max(0, parseInt(magicPoints, 10));
+    // Ensure points can't go below 0 or above 1000
+    const validatedPoints = Math.max(0, Math.min(1000, parseInt(magicPoints, 10)));
     
     const updatedUser = await User.findByIdAndUpdate(
       req.user.id,
@@ -49,6 +49,19 @@ router.post('/', auth, async (req, res) => {
       console.log(`[BE] User not found when updating points: ${req.user.id}`);
       return res.status(404).json({ message: 'User not found' });
     }
+    
+    // Also update the user's scores array with this activity
+    const activityScore = {
+      activityType: 'magic_points_update',
+      score: validatedPoints,
+      timestamp: new Date()
+    };
+    
+    await User.findByIdAndUpdate(
+      req.user.id,
+      { $push: { scores: activityScore } },
+      { new: false } // Don't return the updated document
+    );
     
     console.log(`[BE] Successfully updated magic points for user ${req.user.id} to ${updatedUser.magicPoints}`);
     res.json({ 
@@ -162,6 +175,20 @@ router.post('/sync', auth, async (req, res) => {
       console.log(`[BE] Failed to update user after sync: ${req.user.id}`);
       return res.status(500).json({ message: 'Failed to update user after operations' });
     }
+    
+    // Also update the user's scores array
+    const scoreEntry = {
+      activityType: 'magic_points_sync',
+      score: currentPoints,
+      details: `Synced ${operations.length} operations`,
+      timestamp: new Date()
+    };
+    
+    await User.findByIdAndUpdate(
+      req.user.id,
+      { $push: { scores: scoreEntry } },
+      { new: false } // Don't return the updated document
+    );
     
     console.log(`[BE] Successfully synced points for user ${req.user.id}, new value: ${updatedUser.magicPoints}`);
     res.json({ 
