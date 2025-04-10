@@ -5,6 +5,7 @@ const { MongoClient, ServerApiVersion } = require('mongodb');
 const cors = require('cors');
 const authRoutes = require('./routes/auth');
 const scoreRoutes = require('./routes/scores');
+const magicPointsRoutes = require('./routes/magicPoints');
 const path = require('path');
 
 const app = express();
@@ -58,6 +59,7 @@ if (process.env.NODE_ENV === 'production') {
 // Routes with prefix
 app.use(`${API_PREFIX}/auth`, authRoutes);
 app.use(`${API_PREFIX}/scores`, scoreRoutes);
+app.use(`${API_PREFIX}/user/magic-points`, magicPointsRoutes);
 
 // Add health check route
 app.get('/api/health', (req, res) => {

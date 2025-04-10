@@ -36,6 +36,14 @@ const userSchema = new mongoose.Schema({
     score: Number,
     completedAt: Date
   }],
+  magicPoints: {
+    type: Number,
+    default: 100
+  },
+  lastMagicPointsUpdate: {
+    type: Date,
+    default: Date.now
+  },
   avatar: {
     type: String,
     default: null
