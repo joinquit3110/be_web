@@ -159,4 +159,19 @@ router.post('/avatar', auth, upload.single('avatar'), async (req, res) => {
   }
 });
 
+// Verify token validity
+router.get('/verify', auth, async (req, res) => {
+  try {
+    // If the auth middleware allowed this request, the token is valid
+    res.json({ 
+      authenticated: true, 
+      userId: req.user.id,
+      timestamp: new Date()
+    });
+  } catch (err) {
+    console.error('[BE] Error in verify endpoint:', err);
+    res.status(500).json({ message: err.message });
+  }
+});
+
 module.exports = router;
