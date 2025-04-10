@@ -44,24 +44,19 @@ const API_PREFIX = '/api';
 // Serve static files from uploads
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// Serve the React frontend in production
-if (process.env.NODE_ENV === 'production') {
-  app.use(express.static(path.join(__dirname, 'public')));
-  
-  // Handle React routing, return all requests to React app
-  app.get('*', (req, res, next) => {
-    if (req.url.startsWith('/api')) {
-      return next();
-    }
-    res.sendFile(path.join(__dirname, 'public', 'index.html'));
-  });
-}
+// Serve static files from public directory
+app.use(express.static(path.join(__dirname, 'public')));
 
 // Routes with prefix
 app.use(`${API_PREFIX}/auth`, authRoutes);
 app.use(`${API_PREFIX}/exercises`, exerciseRoutes);
 app.use(`${API_PREFIX}/user/scores`, scoreRoutes);
 app.use(`${API_PREFIX}/user/magic-points`, magicPointsRoutes);
+
+// Catch-all route for SPA - send index.html for any unknown routes
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
 
 // Add health check route
 app.get('/api/health', (req, res) => {
@@ -75,11 +70,6 @@ app.use((err, req, res, next) => {
     message: err.message || 'Internal server error',
     stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
   });
-});
-
-// Add catch-all route for frontend
-app.get('*', (req, res) => {
-  res.status(404).json({ message: 'Not Found' });
 });
 
 // Update server listening
