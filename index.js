@@ -35,7 +35,19 @@ app.use((req, res, next) => {
 app.use(express.json());
 
 // Connect to MongoDB with updated configuration
-mongoose.connect(process.env.MONGODB_URI, {
+console.log('Attempting to connect to MongoDB...');
+const MONGODB_URI = process.env.MONGODB_URI;
+
+if (!MONGODB_URI) {
+  console.error('MongoDB URI is missing. Make sure MONGODB_URI is set in .env file');
+  process.exit(1);
+}
+
+// Log a masked version of the connection string for debugging (hide password)
+const maskedURI = MONGODB_URI.replace(/:([^:@]+)@/, ':******@');
+console.log(`Connecting to MongoDB: ${maskedURI}`);
+
+mongoose.connect(MONGODB_URI, {
   serverApi: {
     version: ServerApiVersion.v1,
     strict: true,
@@ -49,6 +61,16 @@ mongoose.connect(process.env.MONGODB_URI, {
 .then(() => console.log("Successfully connected to MongoDB Atlas!"))
 .catch(err => {
   console.error('MongoDB connection error:', err);
+  
+  // More detailed error logging
+  if (err.name === 'MongoParseError') {
+    console.error('Invalid MongoDB connection string. Please check your MONGODB_URI in .env');
+  } else if (err.name === 'MongoServerSelectionError') {
+    console.error('Cannot connect to MongoDB server. Please check your network or MongoDB Atlas status');
+  } else if (err.message && err.message.includes('Authentication failed')) {
+    console.error('MongoDB authentication failed. Please check your username and password');
+  }
+  
   process.exit(1); // Stop the program if connection fails
 });
 
