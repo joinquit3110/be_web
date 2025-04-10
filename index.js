@@ -13,11 +13,25 @@ const app = express();
 
 // Đơn giản hóa CORS
 app.use(cors({
-  origin: ['https://fe-web-lilac.vercel.app'], // Frontend URL allowed
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'Authorization', '*'],
+  origin: [
+    'https://fe-web-lilac.vercel.app',  // Vercel frontend
+    'http://localhost:3000',            // Local development
+    'https://inequality-web.vercel.app', // Alternative frontend URL
+    'https://mw15w-5173.csb.app'        // CodeSandbox URL
+  ],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
   credentials: true, // Cho phép cookie
+  preflightContinue: false,
+  optionsSuccessStatus: 204
 }));
+
+// Set additional headers for better CORS handling
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Credentials', 'true');
+  next();
+});
+
 app.use(express.json());
 
 // Connect to MongoDB with updated configuration
