@@ -78,11 +78,24 @@ router.post('/sync', auth, async (req, res) => {
     console.log(`[BE] Sample operations (showing ${sampleOps.length} of ${operations.length}):`, 
       JSON.stringify(sampleOps));
     
-    // Validate operation format
-    const invalidOps = operations.filter(op => 
-      !op.type || !['add', 'remove', 'set'].includes(op.type) || 
-      typeof op.amount !== 'number' || isNaN(op.amount)
-    );
+    // Enhanced validation with specific error messages
+    const invalidOps = [];
+    operations.forEach((op, index) => {
+      if (!op.type || !['add', 'remove', 'set'].includes(op.type)) {
+        invalidOps.push({ index, reason: 'Invalid operation type', operation: op });
+      } else if (typeof op.amount !== 'number' || isNaN(op.amount)) {
+        // Try to convert string amounts to numbers
+        if (typeof op.amount === 'string') {
+          try {
+            operations[index].amount = parseFloat(op.amount);
+          } catch (e) {
+            invalidOps.push({ index, reason: 'Amount is not convertible to number', operation: op });
+          }
+        } else {
+          invalidOps.push({ index, reason: 'Amount must be a number', operation: op });
+        }
+      }
+    });
     
     if (invalidOps.length > 0) {
       console.log(`[BE] Found ${invalidOps.length} invalid operations`);
@@ -103,10 +116,10 @@ router.post('/sync', auth, async (req, res) => {
     console.log(`[BE] Current points before sync: ${currentPoints}`);
     
     // Process operations in order
-    for (const op of operations) {
-      console.log(`[BE] Processing operation: ${op.type}, amount: ${op.amount}`);
+    operations.forEach(op => {
+      console.log(`[BE] Processing operation: ${op.type}, amount: ${op.amount}, source: ${op.source || 'unknown'}`);
       
-      // Convert amount to number if it's a string
+      // Convert amount to number if it's a string (additional safety)
       const amount = typeof op.amount === 'string' ? parseFloat(op.amount) : op.amount;
       
       if (op.type === 'add') {
@@ -116,7 +129,7 @@ router.post('/sync', auth, async (req, res) => {
       } else if (op.type === 'set') {
         currentPoints = Math.max(0, amount);
       }
-    }
+    });
     
     console.log(`[BE] Points after processing operations: ${currentPoints}`);
     
@@ -124,6 +137,13 @@ router.post('/sync', auth, async (req, res) => {
     if (isNaN(currentPoints)) {
       console.log(`[BE] Points calculation resulted in NaN, resetting to 100`);
       currentPoints = 100;
+    }
+    
+    // Cap points at a reasonable maximum to prevent exploitation
+    const MAX_POINTS = 1000;
+    if (currentPoints > MAX_POINTS) {
+      console.log(`[BE] Points exceeded maximum (${currentPoints} > ${MAX_POINTS}), capping at ${MAX_POINTS}`);
+      currentPoints = MAX_POINTS;
     }
     
     // Update user with final point value
