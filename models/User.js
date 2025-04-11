@@ -33,8 +33,8 @@ const userSchema = new mongoose.Schema({
   },
   house: {
     type: String,
-    enum: ['gryffindor', 'slytherin', 'ravenclaw', 'hufflepuff', ''],
-    default: ''
+    enum: ['gryffindor', 'slytherin', 'ravenclaw', 'hufflepuff', 'muggle', 'admin', ''],
+    default: 'muggle'
   },
   scores: [{
     exerciseId: String,
