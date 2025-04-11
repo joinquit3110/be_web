@@ -31,6 +31,11 @@ const userSchema = new mongoose.Schema({
     type: String,
     trim: true
   },
+  house: {
+    type: String,
+    enum: ['gryffindor', 'slytherin', 'ravenclaw', 'hufflepuff', ''],
+    default: ''
+  },
   scores: [{
     exerciseId: String,
     score: Number,

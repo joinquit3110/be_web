@@ -7,6 +7,7 @@ const authRoutes = require('./routes/auth');
 const exerciseRoutes = require('./routes/exercises');
 const scoreRoutes = require('./routes/scores');
 const magicPointsRoutes = require('./routes/magicPoints');
+const userRoutes = require('./routes/users');
 const path = require('path');
 
 const app = express();
@@ -97,6 +98,7 @@ app.use(`${API_PREFIX}/auth`, authRoutes);
 app.use(`${API_PREFIX}/exercises`, exerciseRoutes);
 app.use(`${API_PREFIX}/user/scores`, scoreRoutes);
 app.use(`${API_PREFIX}/user/magic-points`, magicPointsRoutes);
+app.use(`${API_PREFIX}/users`, userRoutes);
 
 // Catch-all route for SPA - send index.html for any unknown routes
 app.get('*', (req, res) => {
