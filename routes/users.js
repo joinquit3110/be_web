@@ -188,76 +188,158 @@ router.patch('/:id', auth, async (req, res) => {
   }
 });
 
-// Bulk update for all users in a house (admin feature)
-router.post('/bulk-update', auth, async (req, res) => {
+// Handle bulk user updates - improved version with resetAttempts support
+router.post('/bulk-update', auth, requireAdmin, async (req, res) => {
   try {
-    const { house, magicPointsChange, reason } = req.body;
+    const { userIds, magicPoints, house, needsSync, resetAttempts, reason } = req.body;
     
-    if (!house) {
-      return res.status(400).json({ message: 'House parameter is required' });
+    if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
+      return res.status(400).json({ message: 'Valid user IDs array required' });
     }
-
-    if (magicPointsChange === undefined) {
-      return res.status(400).json({ message: 'Magic points change parameter is required' });
-    }
-
-    // Find all users in the specified house
-    const usersInHouse = await User.find({ house });
     
-    if (usersInHouse.length === 0) {
-      return res.status(404).json({ message: `No users found in ${house} house` });
-    }
-
-    // Update each user's points
-    const updatePromises = usersInHouse.map(user => {
-      const currentPoints = user.magicPoints || 0;
-      const newPoints = Math.max(0, currentPoints + magicPointsChange);
-      
-      return User.findByIdAndUpdate(
-        user._id,
-        { 
-          $set: { 
-            magicPoints: newPoints,
-            lastMagicPointsUpdate: new Date() 
-          } 
-        }
-      );
-    });
-    
-    await Promise.all(updatePromises);
+    // We'll track results for each user
+    const results = [];
+    const updatedUsers = [];
     
     // Get Socket.IO instance
     const io = req.app.get('io');
     
-    if (io) {
-      // Broadcast to the house room
-      io.to(house).emit('house_update', {
-        type: 'house_points_changed',
-        house: house,
-        pointsChange: magicPointsChange,
-        reason: reason || 'House points updated by admin',
-        timestamp: new Date().toISOString()
-      });
-      
-      // Also broadcast global notification
-      io.emit('global_update', {
-        type: 'house_points_bulk_update',
-        house: house,
-        pointsChange: magicPointsChange,
-        message: `${house} has ${magicPointsChange >= 0 ? 'gained' : 'lost'} ${Math.abs(magicPointsChange)} points${reason ? ': ' + reason : ''}`,
-        timestamp: new Date().toISOString()
-      });
-      
-      console.log(`Broadcast bulk points update to ${house} house: ${magicPointsChange} points`);
+    for (const userId of userIds) {
+      try {
+        const updateFields = {};
+        
+        // Add fields to update based on what was provided
+        if (house !== undefined) {
+          const validHouses = ['gryffindor', 'slytherin', 'ravenclaw', 'hufflepuff', 'admin', 'muggle'];
+          if (!validHouses.includes(house)) {
+            results.push({ 
+              userId, 
+              success: false, 
+              message: 'Invalid house value' 
+            });
+            continue;
+          }
+          updateFields.house = house;
+        }
+        
+        if (magicPoints !== undefined) {
+          updateFields.magicPoints = Math.max(0, parseInt(magicPoints, 10));
+          updateFields.lastMagicPointsUpdate = new Date();
+        }
+        
+        if (needsSync !== undefined) {
+          updateFields.needsSync = needsSync;
+          updateFields.syncRequestedAt = new Date();
+        }
+        
+        if (resetAttempts === true) {
+          updateFields.resetAttempts = true;
+          updateFields.resetAttemptsAt = new Date();
+        }
+        
+        // Skip if no updates
+        if (Object.keys(updateFields).length === 0) {
+          results.push({ 
+            userId, 
+            success: false, 
+            message: 'No valid update fields provided' 
+          });
+          continue;
+        }
+        
+        // Update user in database
+        const updatedUser = await User.findByIdAndUpdate(
+          userId,
+          { $set: updateFields },
+          { new: true, select: '-password' }
+        );
+        
+        if (!updatedUser) {
+          results.push({ 
+            userId, 
+            success: false, 
+            message: 'User not found' 
+          });
+          continue;
+        }
+        
+        // Add to our array of successfully updated users
+        updatedUsers.push(updatedUser);
+        
+        // Send real-time update if user is connected
+        if (io) {
+          const socketId = activeConnections.get(userId.toString());
+          
+          if (socketId) {
+            console.log(`User ${userId} is online. Sending direct update.`);
+            // User is online - send direct update
+            io.to(socketId).emit('sync_update', {
+              type: 'user_update',
+              data: {
+                userId: updatedUser._id,
+                updatedFields: updateFields
+              }
+            });
+            
+            // If house was updated, notify all users
+            if (house !== undefined) {
+              io.emit('global_update', {
+                type: 'user_house_changed',
+                userId: updatedUser._id.toString(),
+                username: updatedUser.username,
+                house,
+                message: `${updatedUser.username} has been assigned to ${house}`
+              });
+            }
+            
+            // If points were updated, notify house members
+            if (magicPoints !== undefined && updatedUser.house) {
+              io.to(updatedUser.house).emit('house_update', {
+                type: 'member_points_changed',
+                userId: updatedUser._id,
+                username: updatedUser.username,
+                points: updatedUser.magicPoints,
+                house: updatedUser.house,
+                reason: reason || 'Points updated by admin'
+              });
+            }
+
+            // If attempts were reset, send special notification
+            if (resetAttempts === true) {
+              io.to(socketId).emit('sync_update', {
+                type: 'reset_attempts',
+                message: 'Your attempts have been reset by admin',
+                timestamp: new Date().toISOString()
+              });
+            }
+          } else {
+            console.log(`User ${userId} is offline. Marking for sync.`);
+            // Mark user for sync when they come back online
+            await User.findByIdAndUpdate(userId, {
+              $set: { 
+                needsSync: true,
+                syncRequestedAt: new Date() 
+              }
+            });
+          }
+        }
+        
+        results.push({ userId, success: true });
+      } catch (err) {
+        console.error(`Error updating user ${userId}:`, err);
+        results.push({ userId, success: false, message: err.message });
+      }
     }
     
-    res.json({ 
+    res.json({
       success: true,
-      message: `Updated ${usersInHouse.length} users in ${house}`,
-      updatedUsers: usersInHouse.map(u => u._id)
+      results,
+      updated: results.filter(r => r.success).length,
+      failed: results.filter(r => !r.success).length,
+      users: updatedUsers.map(u => ({ id: u._id, username: u.username }))
     });
   } catch (err) {
-    console.error('Error performing bulk update:', err);
+    console.error('Error in bulk update:', err);
     res.status(500).json({ message: err.message });
   }
 });
