@@ -34,7 +34,7 @@ router.patch('/:id', auth, async (req, res) => {
     const { house } = req.body;
     
     // Validate house value
-    const validHouses = ['gryffindor', 'slytherin', 'ravenclaw', 'hufflepuff'];
+    const validHouses = ['gryffindor', 'slytherin', 'ravenclaw', 'hufflepuff', 'muggle', 'admin', ''];
     if (house && !validHouses.includes(house)) {
       return res.status(400).json({ message: 'Invalid house value' });
     }
