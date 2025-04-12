@@ -1,6 +1,7 @@
 const router = require('express').Router();
 const User = require('../models/User');
 const auth = require('../middleware/auth');
+const { requireAdmin } = require('../middleware/auth'); // Importar el middleware requireAdmin
 
 // Get all users - only for admins
 router.get('/', auth, async (req, res) => {
