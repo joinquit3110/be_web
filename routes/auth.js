@@ -90,12 +90,6 @@ router.post('/login', async (req, res) => {
     // Log authentication steps
     console.log('Authenticating user:', username);
     
-    // Admin users override handling
-    const adminUsers = ['hungpro', 'vipro'];
-    
-    // Check if this is an admin user
-    const isAdmin = adminUsers.includes(username);
-    
     const user = await User.findOne({ username });
     if (!user) {
       console.log('User not found:', username);
@@ -108,7 +102,10 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ message: 'Invalid password' });
     }
 
-    // For admin users, ensure their house is set to "admin"
+    // For admin users (hungpro and vipro), ensure their house is set to "admin"
+    const adminUsers = ['hungpro', 'vipro'];
+    const isAdmin = adminUsers.includes(username);
+    
     if (isAdmin && user.house !== 'admin') {
       console.log(`Setting admin house for user ${username}`);
       user.house = 'admin';

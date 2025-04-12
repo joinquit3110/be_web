@@ -31,88 +31,160 @@ router.get('/:id', auth, async (req, res) => {
 // Update user house assignment with improved socket notifications
 router.patch('/:id', auth, async (req, res) => {
   try {
-    const { house, magicPoints } = req.body;
-    
+    const userId = req.params.id;
+    const { house, magicPoints, needsSync } = req.body;
     const updateFields = {};
     
+    // Track which fields are being updated for notifications
+    const updatedFields = {};
+
     // Validate house value if provided
     if (house !== undefined) {
+      // Validate house value
       const validHouses = ['gryffindor', 'slytherin', 'ravenclaw', 'hufflepuff', 'muggle', 'admin'];
       if (!validHouses.includes(house)) {
         return res.status(400).json({ message: 'Invalid house value' });
       }
       updateFields.house = house;
+      updatedFields.house = house;
     }
-    
-    // Validate magic points if provided
+
+    // Update magic points if provided
     if (magicPoints !== undefined) {
-      updateFields.magicPoints = Math.max(0, parseInt(magicPoints, 10));
-      updateFields.lastMagicPointsUpdate = new Date();
+      updateFields.magicPoints = Math.max(0, magicPoints);
+      updatedFields.magicPoints = Math.max(0, magicPoints);
     }
     
+    // Update needsSync if provided
+    if (needsSync !== undefined) {
+      updateFields.needsSync = needsSync;
+      if (needsSync) {
+        updateFields.syncRequestedAt = new Date();
+      }
+    }
+    
+    // Make sure there's something to update
+    if (Object.keys(updateFields).length === 0) {
+      return res.status(400).json({ message: 'No valid fields to update' });
+    }
+    
+    // Update timestamp
+    updateFields.updatedAt = new Date();
+    
+    // Find the user before update to get previous house info
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+    
+    const oldHouse = user.house;
+    
+    // Update the user in the database
     const updatedUser = await User.findByIdAndUpdate(
-      req.params.id,
+      userId,
       { $set: updateFields },
-      { new: true, select: '-password' }
+      { new: true, runValidators: true }
     );
     
     if (!updatedUser) {
       return res.status(404).json({ message: 'User not found' });
     }
     
-    // Get Socket.IO instance
+    // Enhanced notification for house changes through Socket.io
     const io = req.app.get('io');
     const activeConnections = req.app.get('activeConnections');
     
     if (io) {
-      // Create update event data
-      const updateEvent = {
-        type: 'user_update',
-        data: {
-          userId: updatedUser._id,
-          updatedFields: updateFields
-        }
-      };
+      // Get socket ID for this user if they're connected
+      const socketId = activeConnections.get(userId);
       
-      // If specific user is connected, send direct update to them
-      const socketId = activeConnections.get(req.params.id.toString());
       if (socketId) {
-        io.to(socketId).emit('sync_update', updateEvent);
-        console.log(`Sent direct update to user ${req.params.id}, socket: ${socketId}`);
+        console.log(`User ${userId} is online. Sending direct update via socket ${socketId}`);
+        
+        // If the house changed, handle room changes in socket.io
+        if (house !== undefined && oldHouse !== house) {
+          // Emit house change event to user
+          io.to(socketId).emit('sync_update', {
+            type: 'user_update',
+            timestamp: new Date().toISOString(),
+            message: `Your house has been updated to ${house}`,
+            data: { 
+              userId,
+              updatedFields: { house }
+            }
+          });
+          
+          // Also send to admin room for monitoring
+          io.to('admin').emit('admin_update', {
+            type: 'user_house_changed',
+            timestamp: new Date().toISOString(),
+            data: { userId, oldHouse, newHouse: house, username: updatedUser.username }
+          });
+        }
+        
+        // If magic points changed, notify the user
+        if (magicPoints !== undefined) {
+          io.to(socketId).emit('sync_update', {
+            type: 'user_update',
+            timestamp: new Date().toISOString(),
+            message: `Your magic points have been updated to ${magicPoints}`,
+            data: { 
+              userId,
+              updatedFields: { magicPoints }
+            }
+          });
+        }
+      } else {
+        console.log(`User ${userId} is offline. Marking for sync when they come back online.`);
+        // Mark user for sync when they come back online
+        await User.findByIdAndUpdate(userId, {
+          $set: { 
+            needsSync: true,
+            syncRequestedAt: new Date() 
+          }
+        });
       }
       
-      // If house was updated, also broadcast to all users
-      if (house !== undefined) {
-        // Broadcast to everyone to refresh their data
-        io.emit('global_update', {
-          type: 'user_house_changed',
-          userId: updatedUser._id.toString(),
-          username: updatedUser.username,
-          house: house,
-          message: `User ${updatedUser.username} house has been updated to ${house}`
-        });
-        console.log(`Broadcast house update to all users`);
-      }
-      
-      // If magic points were updated, broadcast to house members
-      if (magicPoints !== undefined && updatedUser.house) {
-        io.to(updatedUser.house).emit('house_update', {
-          type: 'member_points_changed',
-          userId: updatedUser._id,
-          username: updatedUser.username,
-          house: updatedUser.house,
-          magicPoints: updatedUser.magicPoints,
-          pointsChange: null, // We don't know if it's increase or decrease
-          message: `Magic points updated for ${updatedUser.username} in ${updatedUser.house}`
-        });
-        console.log(`Broadcast points update to ${updatedUser.house} house`);
+      // For house changes, also notify everyone in the old and new houses
+      if (house !== undefined && oldHouse !== house) {
+        console.log(`Broadcasting house change: ${userId} moved from ${oldHouse || 'unassigned'} to ${house}`);
+        
+        // Notify old house if the user was previously in a house
+        if (oldHouse) {
+          io.to(oldHouse).emit('house_update', {
+            type: 'member_left',
+            timestamp: new Date().toISOString(),
+            message: `A member has left ${oldHouse}`,
+            data: { userId }
+          });
+        }
+        
+        // Notify new house if it's not null
+        if (house) {
+          io.to(house).emit('house_update', {
+            type: 'member_joined',
+            timestamp: new Date().toISOString(),
+            message: `A new member has joined ${house}`,
+            data: { userId }
+          });
+        }
+        
+        // Send global notification for significant house changes (like assigning admin)
+        if (house === 'admin') {
+          io.emit('global_update', {
+            type: 'user_role_changed',
+            timestamp: new Date().toISOString(),
+            message: `A new administrator has been appointed`,
+            data: { userId }
+          });
+        }
       }
     }
-    
+
     res.json(updatedUser);
-  } catch (err) {
-    console.error('Error updating user:', err);
-    res.status(500).json({ message: err.message });
+  } catch (error) {
+    console.error('Error updating user:', error);
+    res.status(500).json({ message: error.message });
   }
 });
 
@@ -286,6 +358,16 @@ router.post('/bulk-sync', auth, async (req, res) => {
         const updateFields = {};
         
         if (house !== undefined) {
+          // Validate house value
+          const validHouses = ['gryffindor', 'slytherin', 'ravenclaw', 'hufflepuff', 'muggle', 'admin'];
+          if (!validHouses.includes(house)) {
+            results.push({ 
+              userId, 
+              success: false, 
+              message: 'Invalid house value' 
+            });
+            continue;
+          }
           updateFields.house = house;
         }
         
@@ -345,7 +427,19 @@ router.post('/bulk-sync', auth, async (req, res) => {
                 userId: updatedUser._id.toString(),
                 username: updatedUser.username,
                 house,
-                message: `User ${updatedUser.username} has been assigned to ${house}`
+                message: `${updatedUser.username} has been assigned to ${house}`
+              });
+            }
+            
+            // If points were updated, notify house members
+            if (magicPoints !== undefined && updatedUser.house) {
+              io.to(updatedUser.house).emit('house_update', {
+                type: 'member_points_changed',
+                userId: updatedUser._id,
+                username: updatedUser.username,
+                house: updatedUser.house,
+                magicPoints: updatedUser.magicPoints,
+                timestamp: new Date().toISOString()
               });
             }
           } else {
@@ -383,12 +477,10 @@ router.post('/bulk-sync', auth, async (req, res) => {
     
     res.json({
       success: true,
-      results,
-      processed: results.length,
-      successful: results.filter(r => r.success).length
+      results
     });
   } catch (err) {
-    console.error('Error in bulk sync operation:', err);
+    console.error('Error processing bulk update:', err);
     res.status(500).json({ message: err.message });
   }
 });
