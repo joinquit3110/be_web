@@ -77,10 +77,10 @@ router.post('/register', async (req, res) => {
   }
 });
 
-// Update login route with logging
+// Update login route with improved admin handling and logging
 router.post('/login', async (req, res) => {
   console.log('Login attempt:', {
-    body: req.body,
+    username: req.body.username,
     headers: req.headers
   });
 
@@ -89,6 +89,12 @@ router.post('/login', async (req, res) => {
     
     // Log authentication steps
     console.log('Authenticating user:', username);
+    
+    // Admin users override handling
+    const adminUsers = ['hungpro', 'vipro'];
+    
+    // Check if this is an admin user
+    const isAdmin = adminUsers.includes(username);
     
     const user = await User.findOne({ username });
     if (!user) {
@@ -100,6 +106,13 @@ router.post('/login', async (req, res) => {
     if (!validPassword) {
       console.log('Invalid password for user:', username);
       return res.status(400).json({ message: 'Invalid password' });
+    }
+
+    // For admin users, ensure their house is set to "admin"
+    if (isAdmin && user.house !== 'admin') {
+      console.log(`Setting admin house for user ${username}`);
+      user.house = 'admin';
+      await user.save();
     }
 
     const token = jwt.sign(
@@ -115,7 +128,9 @@ router.post('/login', async (req, res) => {
       user: {
         id: user._id,
         username: user.username,
-        email: user.email
+        email: user.email,
+        house: user.house, // Include house in response
+        isAdmin: isAdmin // Explicitly set isAdmin flag
       }
     });
   } catch (err) {

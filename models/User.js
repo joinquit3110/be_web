@@ -57,6 +57,17 @@ const userSchema = new mongoose.Schema({
   createdAt: {
     type: Date,
     default: Date.now
+  },
+  // New fields for optimized sync
+  needsSync: {
+    type: Boolean,
+    default: false
+  },
+  syncRequestedAt: {
+    type: Date
+  },
+  lastSyncedAt: {
+    type: Date
   }
 });
 
