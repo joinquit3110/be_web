@@ -112,13 +112,26 @@ router.post('/login', async (req, res) => {
       await user.save();
     }
 
+    // Create a token with more user information for proper authorization
     const token = jwt.sign(
-      { id: user._id },
+      { 
+        id: user._id,
+        username: user.username,
+        house: user.house || 'muggle',
+        role: isAdmin ? 'admin' : 'student',
+        isAdmin: isAdmin
+      },
       process.env.JWT_SECRET,
       { expiresIn: '24h' }
     );
 
     console.log('Login successful:', username);
+    console.log('Token payload:', {
+      username: user.username,
+      house: user.house,
+      role: isAdmin ? 'admin' : 'student',
+      isAdmin: isAdmin
+    });
     
     res.json({
       token,
