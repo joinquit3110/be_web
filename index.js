@@ -98,6 +98,9 @@ const io = socketIO(server, {
   pingInterval: 10000, // How often to ping clients to check connection
 });
 
+// Admin users constant for filtering notifications
+const ADMIN_USERS = ['hungpro', 'vipro'];
+
 // Store active connections with improved handling
 const activeConnections = new Map();
 // Track user online status with timestamps
@@ -338,29 +341,63 @@ app.set('userStatus', userStatus); // Add userStatus to app for route usage
 
 // NEW: Helper function to send real-time notifications to users
 app.locals.sendRealTimeNotification = (options) => {
-  const { userId, house, message, type, title } = options;
+  const { userId, house, message, type, title, skipAdmin } = options;
   
   try {
     // Option 1: Send to specific user
     if (userId && activeConnections.has(userId)) {
+      // Check if user is an admin and we should skip admins
+      if (skipAdmin === "true" || skipAdmin === true) {
+        const user = userStatus.get(userId);
+        if (user && ADMIN_USERS.includes(user.username)) {
+          return false; // Skip sending to admin
+        }
+      }
+      
       const socketId = activeConnections.get(userId);
       io.to(socketId).emit('admin_notification', {
         message,
         notificationType: type || 'info',
         title,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        skipAdmin
       });
       return true;
     }
     
     // Option 2: Send to an entire house
     if (house) {
-      io.to(house).emit('admin_notification', {
-        message,
-        notificationType: type || 'info',
-        title,
-        timestamp: new Date().toISOString()
-      });
+      // If skipAdmin is true, we need to filter out admin sockets from the house room
+      if (skipAdmin === "true" || skipAdmin === true) {
+        // Get all sockets in the house room
+        const socketsInHouse = [];
+        for (const [userId, socketId] of activeConnections.entries()) {
+          const user = userStatus.get(userId);
+          if (user && user.house === house && !ADMIN_USERS.includes(user.username)) {
+            socketsInHouse.push(socketId);
+          }
+        }
+        
+        // Send individually to non-admin sockets
+        for (const socketId of socketsInHouse) {
+          io.to(socketId).emit('admin_notification', {
+            message,
+            notificationType: type || 'info',
+            title,
+            timestamp: new Date().toISOString(),
+            skipAdmin
+          });
+        }
+      } else {
+        // Send to all in the house if not skipping admins
+        io.to(house).emit('admin_notification', {
+          message,
+          notificationType: type || 'info',
+          title,
+          timestamp: new Date().toISOString(),
+          skipAdmin
+        });
+      }
       return true;
     }
     
@@ -372,17 +409,35 @@ app.locals.sendRealTimeNotification = (options) => {
 };
 
 // NEW: Helper function to broadcast house point changes
-app.locals.broadcastHousePointsUpdate = (house, pointChange, newTotal, reason) => {
+app.locals.broadcastHousePointsUpdate = (house, pointChange, newTotal, reason, skipAdmin) => {
   try {
     if (!house) return false;
     
-    io.to(house).emit('house_points_update', {
-      house,
-      points: pointChange,
-      newTotal,
-      reason: reason || 'Admin action',
-      timestamp: new Date().toISOString()
-    });
+    if (skipAdmin === "true" || skipAdmin === true) {
+      // Send individually to non-admin users in the house
+      for (const [userId, socketId] of activeConnections.entries()) {
+        const user = userStatus.get(userId);
+        if (user && user.house === house && !ADMIN_USERS.includes(user.username)) {
+          io.to(socketId).emit('house_points_update', {
+            house,
+            points: pointChange,
+            newTotal,
+            reason: reason || 'Admin action',
+            timestamp: new Date().toISOString(),
+            skipAdmin: true
+          });
+        }
+      }
+    } else {
+      // Send to all in the house
+      io.to(house).emit('house_points_update', {
+        house,
+        points: pointChange,
+        newTotal,
+        reason: reason || 'Admin action',
+        timestamp: new Date().toISOString()
+      });
+    }
     
     return true;
   } catch (error) {

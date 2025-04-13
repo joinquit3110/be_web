@@ -6,10 +6,13 @@ const mongoose = require('mongoose');
 // In-memory storage for active notifications (in a real app, use a database or message queue)
 const activeNotifications = [];
 
+// List of admin usernames
+const ADMIN_USERS = ['hungpro', 'vipro']; 
+
 // Create a notification
 router.post('/', auth, async (req, res) => {
   try {
-    const { type, title, message, targetUsers, housesAffected } = req.body;
+    const { type, title, message, targetUsers, housesAffected, skipAdmin } = req.body;
     
     if (!type || !message) {
       return res.status(400).json({ message: 'Type and message are required fields' });
@@ -24,6 +27,7 @@ router.post('/', auth, async (req, res) => {
       timestamp: new Date().toISOString(),
       targetUsers: targetUsers || [], // If empty, notify all users
       housesAffected: housesAffected || [], // If specified, notify all users in these houses
+      skipAdmin: skipAdmin === "true" || skipAdmin === true, // Store the skipAdmin flag
       expiresAt: new Date(Date.now() + 30000) // Expires in 30 seconds
     };
     
@@ -55,11 +59,19 @@ router.get('/', auth, async (req, res) => {
       return res.status(404).json({ message: 'User not found' });
     }
     
+    // Check if user is an admin
+    const isAdmin = ADMIN_USERS.includes(user.username);
+    
     // Filter notifications that target this user
     const now = new Date();
     const userNotifications = activeNotifications.filter(notification => {
       // Check if notification is still active
       if (new Date(notification.expiresAt) <= now) {
+        return false;
+      }
+      
+      // Skip if this is targeted to non-admins and the user is an admin
+      if (notification.skipAdmin && isAdmin) {
         return false;
       }
       
