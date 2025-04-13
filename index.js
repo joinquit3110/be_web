@@ -106,6 +106,9 @@ const activeConnections = new Map();
 // Track user online status with timestamps
 const userStatus = new Map(); // userId -> { online: boolean, lastSeen: Date }
 
+// Track recent house point updates to prevent duplicates
+const recentHousePointsUpdates = new Map();
+
 // Socket.IO connection handling
 io.on('connection', (socket) => {
   console.log('New client connected', socket.id);
@@ -413,33 +416,94 @@ app.locals.broadcastHousePointsUpdate = (house, pointChange, newTotal, reason, s
   try {
     if (!house) return false;
     
-    if (skipAdmin === "true" || skipAdmin === true) {
-      // Send individually to non-admin users in the house
-      for (const [userId, socketId] of activeConnections.entries()) {
-        const user = userStatus.get(userId);
-        if (user && user.house === house && !ADMIN_USERS.includes(user.username)) {
-          io.to(socketId).emit('house_points_update', {
-            house,
-            points: pointChange,
-            newTotal,
-            reason: reason || 'Admin action',
-            timestamp: new Date().toISOString(),
-            skipAdmin: true
-          });
-        }
+    // Create a unique key for this update
+    const updateKey = `${house}:${pointChange}:${reason || 'AdminAction'}`;
+    
+    // Check if we've broadcasted this same update recently (within 10 seconds)
+    if (recentHousePointsUpdates.has(updateKey)) {
+      const lastUpdate = recentHousePointsUpdates.get(updateKey);
+      if (Date.now() - lastUpdate < 10000) { // 10 seconds
+        console.log(`Skipping duplicate house points update for ${house} (${pointChange} points)`);
+        return true; // Pretend we sent it
       }
-    } else {
-      // Send to all in the house
-      io.to(house).emit('house_points_update', {
-        house,
-        points: pointChange,
-        newTotal,
-        reason: reason || 'Admin action',
-        timestamp: new Date().toISOString()
-      });
     }
     
-    return true;
+    // Record this update to prevent duplicates
+    recentHousePointsUpdates.set(updateKey, Date.now());
+    
+    // Clean up old entries in the recentHousePointsUpdates map
+    const now = Date.now();
+    for (const [key, timestamp] of recentHousePointsUpdates.entries()) {
+      if (now - timestamp > 30000) { // 30 seconds
+        recentHousePointsUpdates.delete(key);
+      }
+    }
+    
+    // Extract criteria and level from reason if available
+    let criteria = null;
+    let level = null;
+    
+    if (reason) {
+      // Try to extract criteria and level using regex patterns
+      const criteriaMatch = reason.match(/[Cc]riteria:?\s*(.+?)(?=\.|$|\s*Level:|\s*Reason:)/);
+      if (criteriaMatch) {
+        criteria = criteriaMatch[1].trim();
+      }
+      
+      const levelMatch = reason.match(/[Ll]evel:?\s*(.+?)(?=\.|$|\s*Criteria:|\s*Reason:)/);
+      if (levelMatch) {
+        level = levelMatch[1].trim();
+      }
+    }
+    
+    // Create a consistent timestamp for all notifications
+    const timestamp = new Date().toISOString();
+    
+    // Common notification data
+    const notificationData = {
+      house,
+      points: pointChange,
+      newTotal,
+      reason: reason || 'Admin action',
+      criteria, 
+      level,
+      timestamp,
+      uniqueId: `house_points_${house}_${pointChange}_${Date.now()}`
+    };
+    
+    // Create a broadcast function to ensure consistent data format
+    const emitNotification = (socketId) => {
+      io.to(socketId).emit('house_points_update', {
+        ...notificationData,
+        skipAdmin: skipAdmin === "true" || skipAdmin === true
+      });
+    };
+    
+    if (skipAdmin === "true" || skipAdmin === true) {
+      // Send individually to non-admin users in the house
+      const sentTo = new Set(); // Track who we've sent to
+      
+      for (const [userId, socketId] of activeConnections.entries()) {
+        const user = userStatus.get(userId);
+        if (user && user.house === house && !ADMIN_USERS.includes(user.username) && !sentTo.has(userId)) {
+          sentTo.add(userId); // Mark as sent to prevent duplicates
+          
+          // Use the emitNotification function with consistent data
+          emitNotification(socketId);
+          
+          console.log(`Sent house points update to ${userId} in ${house}`);
+        }
+      }
+      
+      return sentTo.size > 0; // Return true if we sent to at least one user
+    } else {
+      // Send to all in the house - use a room message
+      io.to(house).emit('house_points_update', {
+        ...notificationData
+      });
+      
+      return true;
+    }
   } catch (error) {
     console.error('Error broadcasting house points update:', error);
     return false;
