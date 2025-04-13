@@ -17,7 +17,7 @@ router.post('/', auth, async (req, res) => {
     
     // Create a new notification
     const notification = {
-      id: mongoose.Types.ObjectId().toString(),
+      id: new mongoose.Types.ObjectId().toString(),
       type, // success, warning, error, info
       title: title || (type === 'success' ? 'Success' : 'Notification'),
       message,
