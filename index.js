@@ -66,8 +66,8 @@ mongoose.connect(MONGODB_URI, {
   },
   useNewUrlParser: true,
   useUnifiedTopology: true,
-  serverSelectionTimeoutMS: 30000, // Thời gian chờ server selection là 30 giây
-  socketTimeoutMS: 45000, // Thời gian chờ socket là 45 giây
+  serverSelectionTimeoutMS: 30000, // Server selection timeout is 30 seconds
+  socketTimeoutMS: 45000, // Socket timeout is 45 seconds
 })
 .then(() => console.log("Successfully connected to MongoDB Atlas!"))
 .catch(err => {
