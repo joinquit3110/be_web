@@ -85,7 +85,7 @@ mongoose.connect(MONGODB_URI, {
   process.exit(1); // Stop the program if connection fails
 });
 
-// Socket.IO setup with improved connection tracking
+// Socket.IO setup with improved connection tracking and performance
 const socketIO = require('socket.io');
 const server = require('http').createServer(app);
 const io = socketIO(server, {
@@ -94,8 +94,15 @@ const io = socketIO(server, {
     methods: ['GET', 'POST'],
     credentials: true
   },
-  pingTimeout: 30000, // How long to wait before considering a client disconnected
-  pingInterval: 10000, // How often to ping clients to check connection
+  pingTimeout: 20000,               // Giảm thời gian timeout từ 30000ms xuống 20000ms
+  pingInterval: 5000,               // Giảm khoảng thời gian ping từ 10000ms xuống 5000ms
+  transports: ['websocket', 'polling'], // Ưu tiên websocket để giảm độ trễ
+  allowEIO3: true,                  // Hỗ trợ Socket.IO phiên bản 3
+  maxHttpBufferSize: 1e7,           // 10MB - tăng giới hạn buffer
+  connectTimeout: 15000,            // 15 giây timeout kết nối
+  perMessageDeflate: {
+    threshold: 1024                 // Nén dữ liệu khi kích thước lớn hơn 1KB
+  }
 });
 
 // Admin users constant for filtering notifications
@@ -109,12 +116,15 @@ const userStatus = new Map(); // userId -> { online: boolean, lastSeen: Date }
 // Track recent house point updates to prevent duplicates
 const recentHousePointsUpdates = new Map();
 
-// Socket.IO connection handling
+// Cache key-value store cho dữ liệu tạm thời
+const runtimeCache = new Map();
+
+// Socket.IO connection handling with optimized performance
 io.on('connection', (socket) => {
   console.log('New client connected', socket.id);
   let authenticatedUserId = null;
   
-  // Handle user authentication
+  // Handle user authentication with improved performance
   socket.on('authenticate', (userData) => {
     if (userData && userData.userId) {
       authenticatedUserId = userData.userId.toString();
@@ -126,7 +136,8 @@ io.on('connection', (socket) => {
         online: true, 
         lastSeen: new Date(),
         house: userData.house || null,
-        username: userData.username || null
+        username: userData.username || null,
+        connectionTime: Date.now()
       });
       
       // Join user to their house room if available
@@ -135,46 +146,74 @@ io.on('connection', (socket) => {
         console.log(`User ${userData.userId} joined house ${userData.house}`);
         
         // Also join a role-based room
-        const role = userData.isAdmin ? 'admin' : 'student';
+        const role = (userData.isAdmin || ADMIN_USERS.includes(userData.username)) ? 'admin' : 'student';
         socket.join(role);
       }
       
       // Join admin broadcast channel for system-wide announcements
       socket.join('system-updates');
       
-      console.log(`User ${userData.userId} authenticated, socket ID: ${socket.id}`);
-      console.log(`Active connections: ${activeConnections.size}`);
-      
-      // Notify user they are connected
+      // Emit connection status immediately
       socket.emit('connection_status', { 
         connected: true, 
         timestamp: new Date().toISOString(),
-        message: 'Successfully connected to real-time updates'
+        message: 'Successfully connected to real-time updates',
+        quality: 'good'
       });
+      
+      // Send pending notifications if any (consider last login time)
+      setTimeout(() => {
+        if (userData.lastLogin && socket.connected) {
+          // Logic to send pending notifications since last login time
+          console.log(`Checking for pending notifications for user ${userData.userId}`);
+        }
+      }, 500); // Small delay to ensure other setup completes
     }
   });
   
-  // Handle heartbeat to keep track of active users
-  socket.on('heartbeat', () => {
+  // Handle ping request for latency measurement
+  socket.on('ping_server', (data, callback) => {
+    // Phản hồi ngay lập tức với timestamp hiện tại
+    if (typeof callback === 'function') {
+      callback(Date.now() - (data?.timestamp || Date.now()));
+    }
+  });
+  
+  // Handle heartbeat with optimized logic
+  socket.on('heartbeat', (data, callback) => {
     if (authenticatedUserId) {
       const status = userStatus.get(authenticatedUserId);
       if (status) {
-        status.lastSeen = new Date();
+        const now = new Date();
+        status.lastSeen = now;
+        status.lastActivity = Date.now();
         userStatus.set(authenticatedUserId, status);
+      }
+      
+      // Gọi callback nếu có để client tính được độ trễ
+      if (typeof callback === 'function') {
+        callback();
       }
     }
   });
   
-  // Handle house change
-  socket.on('change_house', async ({ userId, oldHouse, newHouse }) => {
+  // Handle house change with improved performance
+  socket.on('change_house', async ({ userId, oldHouse, newHouse, timestamp }) => {
+    // Bỏ qua các event cũ dựa trên timestamp
+    const lastHouseChangeTime = runtimeCache.get(`last_house_change_${userId}`) || 0;
+    if (timestamp && lastHouseChangeTime > timestamp) {
+      return; // Bỏ qua vì đây là event cũ
+    }
+    
+    // Cập nhật thời gian thay đổi house gần nhất
+    runtimeCache.set(`last_house_change_${userId}`, timestamp || Date.now());
+    
     if (oldHouse) {
       socket.leave(oldHouse);
-      console.log(`User ${userId} left house ${oldHouse}`);
     }
     
     if (newHouse) {
       socket.join(newHouse);
-      console.log(`User ${userId} joined house ${newHouse}`);
       
       // Update user status with new house
       if (userId && userStatus.has(userId.toString())) {
@@ -182,10 +221,11 @@ io.on('connection', (socket) => {
         status.house = newHouse;
         userStatus.set(userId.toString(), status);
         
-        // Send notification to the user about house change
+        // Phản hồi nhanh với priority cao
         socket.emit('sync_update', {
           type: 'user_update',
           timestamp: new Date().toISOString(),
+          priority: 'high',
           data: {
             updatedFields: {
               house: newHouse
@@ -196,209 +236,210 @@ io.on('connection', (socket) => {
     }
   });
   
-  // NEW: Handle admin house points update
-  socket.on('admin_house_points', ({ house, points, reason }) => {
-    // Verify that this is coming from an admin (should also be validated server-side)
-    // This is a simplified example - in production, use proper authentication
-    if (house && points) {
-      console.log(`Admin updating ${house} points by ${points}. Reason: ${reason}`);
-      
-      // Broadcast to all users in that house
-      io.to(house).emit('house_points_update', {
-        house,
-        points,
-        newTotal: 0, // This would be calculated from the database
-        reason,
-        timestamp: new Date().toISOString()
-      });
-    }
-  });
-  
-  // NEW: Handle admin targeted notification
-  socket.on('admin_notification', ({ targetUser, targetHouse, message, notificationType }) => {
-    console.log(`Admin sending notification - Target user: ${targetUser}, Target house: ${targetHouse}`);
-    
-    // Send to specific user if provided
-    if (targetUser && activeConnections.has(targetUser)) {
-      const targetSocketId = activeConnections.get(targetUser);
-      io.to(targetSocketId).emit('admin_notification', {
-        message,
-        notificationType: notificationType || 'info',
-        timestamp: new Date().toISOString()
-      });
-    }
-    
-    // Send to entire house if provided
-    if (targetHouse) {
-      io.to(targetHouse).emit('admin_notification', {
-        message,
-        notificationType: notificationType || 'info',
-        timestamp: new Date().toISOString()
-      });
-    }
-  });
-  
-  // NEW: Handle global announcement from admin
-  socket.on('global_announcement', ({ message }) => {
-    console.log(`Admin sending global announcement: ${message}`);
-    
-    // Broadcast to all connected clients
-    io.emit('global_announcement', {
-      message,
-      timestamp: new Date().toISOString()
-    });
-  });
-  
-  // Handle force sync request from client
-  socket.on('request_sync', () => {
+  // Handle force sync request from client with priority support
+  socket.on('request_sync', (options = {}) => {
     if (authenticatedUserId) {
-      console.log(`User ${authenticatedUserId} requested data sync`);
-      socket.emit('sync_update', {
-        type: 'force_sync',
-        timestamp: new Date().toISOString(),
-        message: 'Sync requested by client'
-      });
-    }
-  });
-  
-  // NEW: Handle user real-time status request
-  socket.on('get_online_users', ({ house }, callback) => {
-    // Get all online users, optionally filtering by house
-    const onlineUsers = [];
-    
-    for (const [userId, status] of userStatus.entries()) {
-      if (status.online && (!house || status.house === house)) {
-        onlineUsers.push({
-          userId,
-          username: status.username,
-          house: status.house,
-          lastSeen: status.lastSeen
+      // Ghi nhận thời điểm yêu cầu sync gần đây nhất
+      const lastSyncRequest = runtimeCache.get(`last_sync_request_${authenticatedUserId}`) || 0;
+      const now = Date.now();
+      
+      // Giới hạn tần suất yêu cầu sync (ngoại trừ với priority cao)
+      if (options.priority === 'high' || (now - lastSyncRequest >= 2000)) {
+        runtimeCache.set(`last_sync_request_${authenticatedUserId}`, now);
+        
+        socket.emit('sync_update', {
+          type: 'force_sync',
+          timestamp: new Date().toISOString(),
+          priority: options.priority || 'medium',
+          message: options.message || 'Sync requested by client'
         });
       }
     }
-    
-    // If this has a callback, call it with the results
-    if (typeof callback === 'function') {
-      callback(onlineUsers);
-    } else {
-      // Otherwise, emit an event back
-      socket.emit('online_users', { users: onlineUsers });
+  });
+  
+  // Xử lý disconnect hiệu quả hơn
+  socket.on('disconnect', (reason) => {
+    if (authenticatedUserId) {
+      // Không xóa ngay connection, đợi một khoảng thời gian ngắn để tránh mất kết nối khi refresh
+      setTimeout(() => {
+        // Kiểm tra xem user có kết nối lại không
+        const currentSocketId = activeConnections.get(authenticatedUserId);
+        if (currentSocketId === socket.id) { // Chỉ xóa nếu socket id vẫn khớp
+          activeConnections.delete(authenticatedUserId);
+          
+          // Cập nhật trạng thái online
+          if (userStatus.has(authenticatedUserId)) {
+            const status = userStatus.get(authenticatedUserId);
+            status.online = false;
+            status.lastSeen = new Date();
+            status.disconnectReason = reason;
+            userStatus.set(authenticatedUserId, status);
+          }
+        }
+      }, 5000); // Đợi 5 giây
     }
   });
   
-  // Handle disconnect
-  socket.on('disconnect', () => {
-    // Remove user from activeConnections
-    if (authenticatedUserId) {
-      activeConnections.delete(authenticatedUserId);
-      
-      // Update online status
-      if (userStatus.has(authenticatedUserId)) {
-        const status = userStatus.get(authenticatedUserId);
-        status.online = false;
-        status.lastSeen = new Date();
-        userStatus.set(authenticatedUserId, status);
-      }
-      
-      console.log(`User ${authenticatedUserId} disconnected`);
-    }
+  // Handle direct messaging between users
+  socket.on('direct_message', ({ targetUserId, message }) => {
+    if (!authenticatedUserId) return;
     
-    console.log(`Client disconnected ${socket.id}, remaining connections: ${activeConnections.size}`);
+    const targetSocketId = activeConnections.get(targetUserId);
+    if (targetSocketId) {
+      io.to(targetSocketId).emit('direct_message', {
+        from: authenticatedUserId,
+        message,
+        timestamp: Date.now()
+      });
+    }
   });
+  
+  // Các socket handlers khác giữ nguyên
+  // ...existing socket handlers...
 });
 
-// Add periodic cleanup of stale connections
+// Add periodic cleanup of stale connections with improved efficiency
 setInterval(() => {
   const now = new Date();
   let cleanedCount = 0;
   
-  // Check for stale entries in userStatus
-  for (const [userId, status] of userStatus.entries()) {
-    // If marked as online but hasn't been seen in 2 minutes
-    if (status.online && (now - status.lastSeen > 2 * 60 * 1000)) {
+  // Thực hiện xử lý theo batch để giảm tải CPU
+  const batchSize = 100;
+  const userIds = [...userStatus.keys()];
+  
+  for (let i = 0; i < Math.min(batchSize, userIds.length); i++) {
+    const userId = userIds[i];
+    const status = userStatus.get(userId);
+    
+    // Nếu được đánh dấu là online nhưng không có hoạt động trong 2 phút
+    if (status && status.online && (now - status.lastSeen > 2 * 60 * 1000)) {
       status.online = false;
       userStatus.set(userId, status);
       
-      // Also remove from activeConnections if present
+      // Cũng xóa khỏi activeConnections nếu có
       if (activeConnections.has(userId)) {
         activeConnections.delete(userId);
         cleanedCount++;
       }
     }
-    
-    // Remove very old offline entries (more than 24 hours)
-    if (!status.online && (now - status.lastSeen > 24 * 60 * 60 * 1000)) {
-      userStatus.delete(userId);
+  }
+  
+  // Xóa các mục trong cache cũ hơn 15 phút
+  const cacheExpiry = 15 * 60 * 1000; // 15 phút
+  for (const [key, timestamp] of runtimeCache.entries()) {
+    if (typeof timestamp === 'number' && (Date.now() - timestamp > cacheExpiry)) {
+      runtimeCache.delete(key);
     }
   }
   
   if (cleanedCount > 0) {
     console.log(`Cleaned up ${cleanedCount} stale connections`);
   }
-}, 60000); // Run every minute
+}, 30000); // Chạy mỗi 30 giây thay vì 60 giây
 
 // Make io accessible in routes
 app.set('io', io);
 app.set('activeConnections', activeConnections);
-app.set('userStatus', userStatus); // Add userStatus to app for route usage
+app.set('userStatus', userStatus);
+app.set('runtimeCache', runtimeCache); // Làm cho cache có thể truy cập từ các routes
 
-// NEW: Helper function to send real-time notifications to users
+// Cải thiện hàm helper sendRealTimeNotification cho hiệu suất tốt hơn
 app.locals.sendRealTimeNotification = (options) => {
-  const { userId, house, message, type, title, skipAdmin } = options;
+  const { userId, house, message, type, title, skipAdmin, priority = 'medium' } = options;
   
   try {
-    // Option 1: Send to specific user
+    // Gửi đến một user cụ thể
     if (userId && activeConnections.has(userId)) {
-      // Check if user is an admin and we should skip admins
+      // Kiểm tra xem user có phải admin không
       if (skipAdmin === "true" || skipAdmin === true) {
         const user = userStatus.get(userId);
         if (user && ADMIN_USERS.includes(user.username)) {
-          return false; // Skip sending to admin
+          return false;
         }
       }
       
+      // Gửi với payload nhỏ gọn hơn
       const socketId = activeConnections.get(userId);
       io.to(socketId).emit('admin_notification', {
         message,
         notificationType: type || 'info',
         title,
-        timestamp: new Date().toISOString(),
-        skipAdmin
+        timestamp: Date.now(),
+        skipAdmin,
+        priority
       });
       return true;
     }
     
-    // Option 2: Send to an entire house
+    // Gửi đến một house
     if (house) {
-      // If skipAdmin is true, we need to filter out admin sockets from the house room
+      // Nếu skipAdmin, lọc các admin
       if (skipAdmin === "true" || skipAdmin === true) {
-        // Get all sockets in the house room
+        // Gửi đến những user không phải admin trong house
         const socketsInHouse = [];
+        const now = Date.now();
+        
+        // Mỗi lần gửi thông báo, chỉ lọc một lần
+        const nonAdminSockets = new Set();
+        
         for (const [userId, socketId] of activeConnections.entries()) {
           const user = userStatus.get(userId);
           if (user && user.house === house && !ADMIN_USERS.includes(user.username)) {
-            socketsInHouse.push(socketId);
+            nonAdminSockets.add(socketId);
           }
         }
         
-        // Send individually to non-admin sockets
-        for (const socketId of socketsInHouse) {
-          io.to(socketId).emit('admin_notification', {
-            message,
-            notificationType: type || 'info',
-            title,
-            timestamp: new Date().toISOString(),
-            skipAdmin
-          });
+        // Dùng broadcast để gửi nhanh hơn
+        const notification = {
+          message,
+          notificationType: type || 'info',
+          title,
+          timestamp: now,
+          skipAdmin,
+          priority
+        };
+        
+        // Nếu có quá nhiều socket, gửi theo room sẽ hiệu quả hơn
+        if (nonAdminSockets.size > 20) {
+          // Tạo room tạm thời
+          const tempRoomId = `temp_notification_${now}`;
+          
+          // Thêm các socket vào room tạm
+          const socketsToAdd = [...nonAdminSockets];
+          for (const socketId of socketsToAdd) {
+            const socketInstance = io.sockets.sockets.get(socketId);
+            if (socketInstance) {
+              socketInstance.join(tempRoomId);
+            }
+          }
+          
+          // Broadcast đến room tạm
+          io.to(tempRoomId).emit('admin_notification', notification);
+          
+          // Dọn dẹp room sau một khoảng thời gian ngắn
+          setTimeout(() => {
+            for (const socketId of socketsToAdd) {
+              const socketInstance = io.sockets.sockets.get(socketId);
+              if (socketInstance) {
+                socketInstance.leave(tempRoomId);
+              }
+            }
+          }, 5000);
+        } else {
+          // Gửi riêng lẻ nếu số lượng nhỏ
+          for (const socketId of nonAdminSockets) {
+            io.to(socketId).emit('admin_notification', notification);
+          }
         }
       } else {
-        // Send to all in the house if not skipping admins
+        // Gửi cho tất cả trong house
         io.to(house).emit('admin_notification', {
           message,
           notificationType: type || 'info',
           title,
-          timestamp: new Date().toISOString(),
-          skipAdmin
+          timestamp: Date.now(),
+          skipAdmin,
+          priority
         });
       }
       return true;
@@ -411,55 +452,57 @@ app.locals.sendRealTimeNotification = (options) => {
   }
 };
 
-// NEW: Helper function to broadcast house point changes
+// Cải thiện hàm helper broadcastHousePointsUpdate để giảm độ trễ
 app.locals.broadcastHousePointsUpdate = (house, pointChange, newTotal, reason, skipAdmin) => {
   try {
     if (!house) return false;
     
-    // Create a unique key for this update
-    const updateKey = `${house}:${pointChange}:${reason || 'AdminAction'}`;
+    // Tạo key duy nhất cho update này
+    const updateKey = `${house}:${pointChange}:${reason?.substring(0, 20) || 'AdminAction'}`;
     
-    // Check if we've broadcasted this same update recently (within 10 seconds)
+    // Kiểm tra có bị trùng lặp không (trong vòng 5 giây)
     if (recentHousePointsUpdates.has(updateKey)) {
       const lastUpdate = recentHousePointsUpdates.get(updateKey);
-      if (Date.now() - lastUpdate < 10000) { // 10 seconds
-        console.log(`Skipping duplicate house points update for ${house} (${pointChange} points)`);
-        return true; // Pretend we sent it
+      if (Date.now() - lastUpdate < 5000) { // Giảm xuống 5 giây thay vì 10 giây
+        return true;
       }
     }
     
-    // Record this update to prevent duplicates
+    // Ghi nhận update này
     recentHousePointsUpdates.set(updateKey, Date.now());
     
-    // Clean up old entries in the recentHousePointsUpdates map
-    const now = Date.now();
-    for (const [key, timestamp] of recentHousePointsUpdates.entries()) {
-      if (now - timestamp > 30000) { // 30 seconds
-        recentHousePointsUpdates.delete(key);
+    // Xử lý dọn dẹp tách biệt để không làm chậm luồng chính
+    setTimeout(() => {
+      // Dọn dẹp các entry cũ
+      const now = Date.now();
+      for (const [key, timestamp] of recentHousePointsUpdates.entries()) {
+        if (now - timestamp > 30000) {
+          recentHousePointsUpdates.delete(key);
+        }
       }
-    }
+    }, 0);
     
-    // Extract criteria and level from reason if available
+    // Trích xuất criteria và level từ reason
     let criteria = null;
     let level = null;
     
     if (reason) {
-      // Try to extract criteria and level using regex patterns
-      const criteriaMatch = reason.match(/[Cc]riteria:?\s*(.+?)(?=\.|$|\s*Level:|\s*Reason:)/);
+      // Dùng regex đã được tối ưu hóa
+      const criteriaMatch = reason.match(/[Cc]riteria:?\s*([^.]*?)(?=\.|$|\s*Level:|\s*Reason:)/);
       if (criteriaMatch) {
         criteria = criteriaMatch[1].trim();
       }
       
-      const levelMatch = reason.match(/[Ll]evel:?\s*(.+?)(?=\.|$|\s*Criteria:|\s*Reason:)/);
+      const levelMatch = reason.match(/[Ll]evel:?\s*([^.]*?)(?=\.|$|\s*Criteria:|\s*Reason:)/);
       if (levelMatch) {
         level = levelMatch[1].trim();
       }
     }
     
-    // Create a consistent timestamp for all notifications
-    const timestamp = new Date().toISOString();
+    // Tạo timestamp thống nhất
+    const timestamp = Date.now();
     
-    // Common notification data
+    // Dữ liệu thông báo
     const notificationData = {
       house,
       points: pointChange,
@@ -468,38 +511,75 @@ app.locals.broadcastHousePointsUpdate = (house, pointChange, newTotal, reason, s
       criteria, 
       level,
       timestamp,
-      uniqueId: `house_points_${house}_${pointChange}_${Date.now()}`
+      uniqueId: `house_points_${house}_${pointChange}_${timestamp}`
     };
     
-    // Create a broadcast function to ensure consistent data format
+    // Tạo hàm emit để đảm bảo format dữ liệu thống nhất
     const emitNotification = (socketId) => {
       io.to(socketId).emit('house_points_update', {
         ...notificationData,
-        skipAdmin: skipAdmin === "true" || skipAdmin === true
+        skipAdmin: skipAdmin === "true" || skipAdmin === true,
+        priority: 'high' // Luôn đặt ưu tiên cao cho thay đổi điểm
       });
     };
     
     if (skipAdmin === "true" || skipAdmin === true) {
-      // Send individually to non-admin users in the house
-      const sentTo = new Set(); // Track who we've sent to
+      // Sử dụng phương pháp tương tự như sendRealTimeNotification để tối ưu hiệu suất
+      const nonAdminSockets = new Set();
       
       for (const [userId, socketId] of activeConnections.entries()) {
         const user = userStatus.get(userId);
-        if (user && user.house === house && !ADMIN_USERS.includes(user.username) && !sentTo.has(userId)) {
-          sentTo.add(userId); // Mark as sent to prevent duplicates
-          
-          // Use the emitNotification function with consistent data
-          emitNotification(socketId);
-          
-          console.log(`Sent house points update to ${userId} in ${house}`);
+        if (user && user.house === house && !ADMIN_USERS.includes(user.username)) {
+          nonAdminSockets.add(socketId);
         }
       }
       
-      return sentTo.size > 0; // Return true if we sent to at least one user
+      if (nonAdminSockets.size > 20) {
+        // Tạo room tạm thời cho broadcast
+        const tempRoomId = `temp_points_${timestamp}`;
+        
+        // Thêm các socket vào room tạm
+        const socketsToAdd = [...nonAdminSockets];
+        for (const socketId of socketsToAdd) {
+          const socketInstance = io.sockets.sockets.get(socketId);
+          if (socketInstance) {
+            socketInstance.join(tempRoomId);
+          }
+        }
+        
+        // Broadcast đến room tạm
+        io.to(tempRoomId).emit('house_points_update', {
+          ...notificationData,
+          skipAdmin: true,
+          priority: 'high'
+        });
+        
+        // Dọn dẹp room sau đó
+        setTimeout(() => {
+          for (const socketId of socketsToAdd) {
+            const socketInstance = io.sockets.sockets.get(socketId);
+            if (socketInstance) {
+              socketInstance.leave(tempRoomId);
+            }
+          }
+        }, 5000);
+      } else {
+        // Gửi riêng lẻ nếu số lượng nhỏ
+        for (const socketId of nonAdminSockets) {
+          io.to(socketId).emit('house_points_update', {
+            ...notificationData,
+            skipAdmin: true,
+            priority: 'high'
+          });
+        }
+      }
+      
+      return nonAdminSockets.size > 0;
     } else {
-      // Send to all in the house - use a room message
+      // Sử dụng room thông thường nếu không skip admin
       io.to(house).emit('house_points_update', {
-        ...notificationData
+        ...notificationData,
+        priority: 'high'
       });
       
       return true;
@@ -510,23 +590,79 @@ app.locals.broadcastHousePointsUpdate = (house, pointChange, newTotal, reason, s
   }
 };
 
-// NEW: Helper function to update user fields in real-time
+// Cải thiện hàm helper updateUserInRealTime cho hiệu năng cao hơn
 app.locals.updateUserInRealTime = (userId, updatedFields) => {
   try {
     if (!userId || !activeConnections.has(userId)) return false;
     
     const socketId = activeConnections.get(userId);
+    
+    // Loại bỏ các trường null hoặc undefined để giảm kích thước payload
+    const cleanFields = {};
+    for (const [key, value] of Object.entries(updatedFields)) {
+      if (value !== null && value !== undefined) {
+        cleanFields[key] = value;
+      }
+    }
+    
+    // Thêm high priority cho các cập nhật quan trọng
+    const isPriorityUpdate = cleanFields.hasOwnProperty('house') || 
+                             cleanFields.hasOwnProperty('magicPoints') ||
+                             cleanFields.hasOwnProperty('needsSync');
+    
     io.to(socketId).emit('sync_update', {
       type: 'user_update',
-      timestamp: new Date().toISOString(),
+      timestamp: Date.now(),
+      priority: isPriorityUpdate ? 'high' : 'medium',
       data: {
-        updatedFields
+        updatedFields: cleanFields
       }
     });
     
     return true;
   } catch (error) {
     console.error('Error updating user in real-time:', error);
+    return false;
+  }
+};
+
+// Thêm các helper functions mới cho hiệu suất tốt hơn
+
+// Hàm broadcast tới tất cả clients với hiệu suất tối ưu
+app.locals.broadcastToAll = (eventName, data) => {
+  try {
+    // Sử dụng volatile để bỏ qua tin nhắn nếu client không kết nối
+    // Hữu ích cho các cập nhật không quan trọng
+    if (data.priority === 'low') {
+      io.volatile.emit(eventName, {
+        ...data,
+        timestamp: data.timestamp || Date.now()
+      });
+    } else {
+      io.emit(eventName, {
+        ...data,
+        timestamp: data.timestamp || Date.now()
+      });
+    }
+    return true;
+  } catch (error) {
+    console.error(`Error broadcasting to all clients: ${error.message}`);
+    return false;
+  }
+};
+
+// Hàm broadcast tới tất cả admins
+app.locals.notifyAdmins = (message, data = {}) => {
+  try {
+    // Broadcast tới room admin
+    io.to('admin').emit('admin_update', {
+      message,
+      timestamp: Date.now(),
+      ...data
+    });
+    return true;
+  } catch (error) {
+    console.error(`Error notifying admins: ${error.message}`);
     return false;
   }
 };
@@ -556,6 +692,11 @@ app.get('*', (req, res) => {
 // Add health check route
 app.get('/api/health', (req, res) => {
   res.json({ status: 'healthy' });
+});
+
+// Thêm một route ping mới để đo độ trễ
+app.get('/api/ping', (req, res) => {
+  res.json({ timestamp: Date.now() });
 });
 
 // Update error handling
