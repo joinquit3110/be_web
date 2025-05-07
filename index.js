@@ -361,6 +361,13 @@ io.on('connection', (socket) => {
       const { house, points, reason, criteria, level, newTotal } = data;
       
       console.log('[SOCKET] Received client_house_notification:', JSON.stringify(data));
+      console.log('[SOCKET] Notification details:', {
+        house, 
+        points, 
+        reason: reason || 'No reason provided', 
+        criteria: criteria || 'No criteria provided', 
+        level: level || 'No level provided'
+      });
       
       if (!house || points === undefined) {
         console.log('[SOCKET] Ignoring invalid client_house_notification:', data);
@@ -369,6 +376,7 @@ io.on('connection', (socket) => {
       
       // Enhanced logging
       console.log(`[SOCKET] Processing client house notification: ${house} ${points} points, reason: ${reason || 'None'}`);
+      console.log(`[SOCKET] Criteria: ${criteria || 'None'}, Level: ${level || 'None'}`);
       console.log(`[SOCKET] Auth user ID: ${authenticatedUserId || 'Not authenticated'}`);
       
       // Get user info to determine if they're an admin
@@ -388,8 +396,9 @@ io.on('connection', (socket) => {
         if (isAdmin) {
           // Use the same function that server-side updates use
           console.log(`[SOCKET] User ${authenticatedUserId} is admin, broadcasting house points update`);
+          console.log(`[SOCKET] Passing reason "${reason}", criteria "${criteria}", level "${level}"`);
           
-          app.locals.broadcastHousePointsUpdate(
+          const result = app.locals.broadcastHousePointsUpdate(
             house, 
             points, 
             newTotal || null, 
@@ -398,6 +407,8 @@ io.on('connection', (socket) => {
             criteria, 
             level
           );
+          
+          console.log(`[SOCKET] broadcastHousePointsUpdate result: ${result ? 'Success' : 'Failed'}`);
         } else {
           console.log(`[SOCKET] Rejected house notification from non-admin user: ${authenticatedUserId}`);
           // Send a notice back to the user that they lack permission
@@ -617,9 +628,17 @@ app.locals.broadcastHousePointsUpdate = (house, pointChange, newTotal, reason, s
     
     // Debug logging
     console.log(`[HOUSE_POINTS] Broadcasting update to ${house}: ${pointChange} points`);
+    console.log(`[HOUSE_POINTS] Detailed parameters:`, {
+      house,
+      pointChange,
+      newTotal,
+      reason: reason || 'No reason provided',
+      skipAdmin: skipAdmin === true || skipAdmin === "true",
+      criteria: criteria || 'No criteria',
+      level: level || 'No level'
+    });
     console.log(`[HOUSE_POINTS] Active connections: ${activeConnections.size}`);
-    console.log(`[HOUSE_POINTS] Connected users in ${house} house:`);
-    
+
     // Log all users in this house
     const usersInHouse = [];
     for (const [userId, status] of userStatus.entries()) {
@@ -657,6 +676,9 @@ app.locals.broadcastHousePointsUpdate = (house, pointChange, newTotal, reason, s
     // Extract criteria and level from arguments or reason if available
     let _criteria = criteria;
     let _level = level;
+    
+    console.log('[HOUSE_POINTS] Input criteria and level:', { criteria, level });
+    
     if (!_criteria || !_level) {
       if (reason) {
         const criteriaMatch = reason.match(/[Cc]riteria:?:?\s*(.+?)(?=\.|$|\s*Level:|\s*Reason:)/);
@@ -665,6 +687,8 @@ app.locals.broadcastHousePointsUpdate = (house, pointChange, newTotal, reason, s
         if (levelMatch) _level = levelMatch[1].trim();
       }
     }
+    
+    console.log('[HOUSE_POINTS] Parsed criteria and level:', { _criteria, _level });
     
     // Create a consistent timestamp for all notifications
     const timestamp = new Date().toISOString();
@@ -680,6 +704,8 @@ app.locals.broadcastHousePointsUpdate = (house, pointChange, newTotal, reason, s
       timestamp,
       uniqueId: `house_points_${house}_${pointChange}_${Date.now()}`
     };
+    
+    console.log('[HOUSE_POINTS] Notification data being sent:', notificationData);
     
     // Create a broadcast function to ensure consistent data format
     const emitNotification = (socketId) => {
