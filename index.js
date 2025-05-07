@@ -448,7 +448,7 @@ app.set('userStatus', userStatus); // Add userStatus to app for route usage
 
 // NEW: Helper function to send real-time notifications to users
 app.locals.sendRealTimeNotification = (options) => {
-  const { userId, house, message, type, title, skipAdmin } = options;
+  const { userId, house, message, type, title, skipAdmin, reason, criteria, level } = options;
   
   try {
     // Option 1: Send to specific user
@@ -467,7 +467,10 @@ app.locals.sendRealTimeNotification = (options) => {
         notificationType: type || 'info',
         title,
         timestamp: new Date().toISOString(),
-        skipAdmin
+        skipAdmin,
+        reason,
+        criteria,
+        level
       });
       return true;
     }
@@ -492,7 +495,10 @@ app.locals.sendRealTimeNotification = (options) => {
             notificationType: type || 'info',
             title,
             timestamp: new Date().toISOString(),
-            skipAdmin
+            skipAdmin,
+            reason,
+            criteria,
+            level
           });
         }
       } else {
@@ -502,7 +508,10 @@ app.locals.sendRealTimeNotification = (options) => {
           notificationType: type || 'info',
           title,
           timestamp: new Date().toISOString(),
-          skipAdmin
+          skipAdmin,
+          reason,
+          criteria,
+          level
         });
       }
       return true;
@@ -516,7 +525,7 @@ app.locals.sendRealTimeNotification = (options) => {
 };
 
 // NEW: Helper function to broadcast house point changes
-app.locals.broadcastHousePointsUpdate = (house, pointChange, newTotal, reason, skipAdmin) => {
+app.locals.broadcastHousePointsUpdate = (house, pointChange, newTotal, reason, skipAdmin, criteria, level) => {
   try {
     if (!house) return false;
     
@@ -543,20 +552,15 @@ app.locals.broadcastHousePointsUpdate = (house, pointChange, newTotal, reason, s
       }
     }
     
-    // Extract criteria and level from reason if available
-    let criteria = null;
-    let level = null;
-    
-    if (reason) {
-      // Try to extract criteria and level using regex patterns
-      const criteriaMatch = reason.match(/[Cc]riteria:?\s*(.+?)(?=\.|$|\s*Level:|\s*Reason:)/);
-      if (criteriaMatch) {
-        criteria = criteriaMatch[1].trim();
-      }
-      
-      const levelMatch = reason.match(/[Ll]evel:?\s*(.+?)(?=\.|$|\s*Criteria:|\s*Reason:)/);
-      if (levelMatch) {
-        level = levelMatch[1].trim();
+    // Extract criteria and level from arguments or reason if available
+    let _criteria = criteria;
+    let _level = level;
+    if (!_criteria || !_level) {
+      if (reason) {
+        const criteriaMatch = reason.match(/[Cc]riteria:?:?\s*(.+?)(?=\.|$|\s*Level:|\s*Reason:)/);
+        if (criteriaMatch) _criteria = criteriaMatch[1].trim();
+        const levelMatch = reason.match(/[Ll]evel:?:?\s*(.+?)(?=\.|$|\s*Criteria:|\s*Reason:)/);
+        if (levelMatch) _level = levelMatch[1].trim();
       }
     }
     
@@ -569,8 +573,8 @@ app.locals.broadcastHousePointsUpdate = (house, pointChange, newTotal, reason, s
       points: pointChange,
       newTotal,
       reason: reason || 'Admin action',
-      criteria, 
-      level,
+      criteria: _criteria,
+      level: _level,
       timestamp,
       uniqueId: `house_points_${house}_${pointChange}_${Date.now()}`
     };

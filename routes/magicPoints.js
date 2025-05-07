@@ -63,6 +63,19 @@ router.post('/', auth, async (req, res) => {
       { $push: { scores: activityScore } },
       { new: false } // Don't return the updated document
     );
+
+    // Emit real-time notification to the user
+    if (req.app && req.app.locals && req.app.locals.sendRealTimeNotification) {
+      req.app.locals.sendRealTimeNotification({
+        userId: req.user.id,
+        message: `Your magic points have been updated to ${updatedUser.magicPoints}`,
+        type: 'success',
+        title: 'Magic Points Updated',
+        reason: req.body.reason,
+        criteria: req.body.criteria,
+        level: req.body.level
+      });
+    }
     
     console.log(`[BE] Successfully updated magic points for user ${req.user.id} to ${updatedUser.magicPoints}`);
     res.json({ 
