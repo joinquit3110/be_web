@@ -95,12 +95,19 @@ router.patch('/:id', auth, async (req, res) => {
     const io = req.app.get('io');
     const activeConnections = req.app.get('activeConnections');
     
-    if (io) {
-      // Get socket ID for this user if they're connected
-      const socketId = activeConnections.get(userId);
+    if (io && activeConnections) {
+      // Ensure userId is a consistent string format
+      const userIdStr = userId.toString();
+      
+      // Log detailed debugging info
+      console.log(`[USER_UPDATE] Checking if user ${userIdStr} is online`);
+      console.log(`[USER_UPDATE] Active connections: ${activeConnections.size}`);
+      console.log(`[USER_UPDATE] User has socket: ${activeConnections.has(userIdStr)}`);
+      
+      const socketId = activeConnections.get(userIdStr);
       
       if (socketId) {
-        console.log(`User ${userId} is online. Sending direct update via socket ${socketId}`);
+        console.log(`[USER_UPDATE] User ${userIdStr} is online. Sending direct update via socket ${socketId}`);
         
         // If the house changed, handle room changes in socket.io
         if (house !== undefined && oldHouse !== house) {

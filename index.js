@@ -216,7 +216,9 @@ io.on('connection', (socket) => {
   // Handle user authentication
   socket.on('authenticate', (userData) => {
     if (userData && userData.userId) {
+      // Ensure userId is always a string for consistent comparison
       authenticatedUserId = userData.userId.toString();
+      
       // Store user connection for targeted updates
       activeConnections.set(authenticatedUserId, socket.id);
       
@@ -231,7 +233,7 @@ io.on('connection', (socket) => {
       // Join user to their house room if available
       if (userData.house) {
         socket.join(userData.house);
-        console.log(`User ${userData.userId} joined house ${userData.house}`);
+        console.log(`User ${authenticatedUserId} joined house ${userData.house}`);
         
         // Also join a role-based room
         const role = userData.isAdmin ? 'admin' : 'student';
@@ -241,7 +243,7 @@ io.on('connection', (socket) => {
       // Join admin broadcast channel for system-wide announcements
       socket.join('system-updates');
       
-      console.log(`User ${userData.userId} authenticated, socket ID: ${socket.id}`);
+      console.log(`User ${authenticatedUserId} authenticated, socket ID: ${socket.id}`);
       console.log(`Active connections: ${activeConnections.size}`);
       
       // Notify user they are connected
@@ -353,6 +355,73 @@ io.on('connection', (socket) => {
     }
   });
   
+  // Handle client-sent house point notifications (direct from frontend)
+  socket.on('client_house_notification', (data) => {
+    try {
+      const { house, points, reason, criteria, level, newTotal } = data;
+      
+      console.log('[SOCKET] Received client_house_notification:', JSON.stringify(data));
+      
+      if (!house || points === undefined) {
+        console.log('[SOCKET] Ignoring invalid client_house_notification:', data);
+        return;
+      }
+      
+      // Enhanced logging
+      console.log(`[SOCKET] Processing client house notification: ${house} ${points} points, reason: ${reason || 'None'}`);
+      console.log(`[SOCKET] Auth user ID: ${authenticatedUserId || 'Not authenticated'}`);
+      
+      // Get user info to determine if they're an admin
+      if (authenticatedUserId) {
+        // Check user info with consistent string ID
+        const userInfo = userStatus.get(authenticatedUserId);
+        
+        console.log(`[SOCKET] User info for ${authenticatedUserId}:`, userInfo ? 
+          JSON.stringify({
+            house: userInfo.house,
+            username: userInfo.username,
+            isAdmin: ADMIN_USERS.includes(userInfo.username)
+          }) : 'Not found');
+        
+        const isAdmin = userInfo && (userInfo.house === 'admin' || ADMIN_USERS.includes(userInfo.username));
+        
+        if (isAdmin) {
+          // Use the same function that server-side updates use
+          console.log(`[SOCKET] User ${authenticatedUserId} is admin, broadcasting house points update`);
+          
+          app.locals.broadcastHousePointsUpdate(
+            house, 
+            points, 
+            newTotal || null, 
+            reason || 'Admin action', 
+            false, // Don't skip admin
+            criteria, 
+            level
+          );
+        } else {
+          console.log(`[SOCKET] Rejected house notification from non-admin user: ${authenticatedUserId}`);
+          // Send a notice back to the user that they lack permission
+          socket.emit('error_notification', {
+            message: 'You do not have permission to update house points',
+            timestamp: new Date().toISOString()
+          });
+        }
+      } else {
+        console.log('[SOCKET] Rejected unauthenticated house notification');
+        socket.emit('error_notification', {
+          message: 'Authentication required to update house points',
+          timestamp: new Date().toISOString()
+        });
+      }
+    } catch (error) {
+      console.error('[SOCKET] Error processing client_house_notification:', error);
+      socket.emit('error_notification', {
+        message: 'Server error processing your request',
+        timestamp: new Date().toISOString()
+      });
+    }
+  });
+  
   // Handle force sync request from client
   socket.on('request_sync', () => {
     if (authenticatedUserId) {
@@ -452,27 +521,41 @@ app.locals.sendRealTimeNotification = (options) => {
   
   try {
     // Option 1: Send to specific user
-    if (userId && activeConnections.has(userId)) {
-      // Check if user is an admin and we should skip admins
-      if (skipAdmin === "true" || skipAdmin === true) {
-        const user = userStatus.get(userId);
-        if (user && ADMIN_USERS.includes(user.username)) {
-          return false; // Skip sending to admin
-        }
-      }
+    if (userId) {
+      // Ensure userId is always a string
+      const userIdStr = userId.toString();
       
-      const socketId = activeConnections.get(userId);
-      io.to(socketId).emit('admin_notification', {
-        message,
-        notificationType: type || 'info',
-        title,
-        timestamp: new Date().toISOString(),
-        skipAdmin,
-        reason,
-        criteria,
-        level
-      });
-      return true;
+      // Add detailed logging to track the issue
+      console.log(`[NOTIFICATION] Attempting to send to user: ${userIdStr}`);
+      console.log(`[NOTIFICATION] User online status: ${activeConnections.has(userIdStr) ? 'ONLINE' : 'OFFLINE'}`);
+      
+      if (activeConnections.has(userIdStr)) {
+        // Check if user is an admin and we should skip admins
+        if (skipAdmin === "true" || skipAdmin === true) {
+          const user = userStatus.get(userIdStr);
+          if (user && ADMIN_USERS.includes(user.username)) {
+            console.log(`[NOTIFICATION] Skipping admin user: ${userIdStr}`);
+            return false; // Skip sending to admin
+          }
+        }
+        
+        const socketId = activeConnections.get(userIdStr);
+        console.log(`[NOTIFICATION] Sending to socket: ${socketId}`);
+        
+        io.to(socketId).emit('admin_notification', {
+          message,
+          notificationType: type || 'info',
+          title,
+          timestamp: new Date().toISOString(),
+          skipAdmin,
+          reason,
+          criteria,
+          level
+        });
+        return true;
+      } else {
+        console.log(`[NOTIFICATION] User ${userIdStr} appears to be offline.`);
+      }
     }
     
     // Option 2: Send to an entire house
@@ -531,6 +614,25 @@ app.locals.broadcastHousePointsUpdate = (house, pointChange, newTotal, reason, s
     
     // Create a unique key for this update
     const updateKey = `${house}:${pointChange}:${reason || 'AdminAction'}`;
+    
+    // Debug logging
+    console.log(`[HOUSE_POINTS] Broadcasting update to ${house}: ${pointChange} points`);
+    console.log(`[HOUSE_POINTS] Active connections: ${activeConnections.size}`);
+    console.log(`[HOUSE_POINTS] Connected users in ${house} house:`);
+    
+    // Log all users in this house
+    const usersInHouse = [];
+    for (const [userId, status] of userStatus.entries()) {
+      if (status.house === house) {
+        usersInHouse.push({
+          userId,
+          online: status.online,
+          username: status.username,
+          socketId: activeConnections.get(userId)
+        });
+      }
+    }
+    console.log(`[HOUSE_POINTS] Users in ${house}: ${JSON.stringify(usersInHouse)}`);
     
     // Check if we've broadcasted this same update recently (within 10 seconds)
     if (recentHousePointsUpdates.has(updateKey)) {
@@ -592,14 +694,22 @@ app.locals.broadcastHousePointsUpdate = (house, pointChange, newTotal, reason, s
       const sentTo = new Set(); // Track who we've sent to
       
       for (const [userId, socketId] of activeConnections.entries()) {
-        const user = userStatus.get(userId);
-        if (user && user.house === house && !ADMIN_USERS.includes(user.username) && !sentTo.has(userId)) {
-          sentTo.add(userId); // Mark as sent to prevent duplicates
+        // Always ensure we're comparing strings
+        const userIdStr = userId.toString();
+        
+        // Get the user status
+        const user = userStatus.get(userIdStr);
+        
+        // Log detailed user info for debugging
+        console.log(`[HOUSE_POINTS] Checking user ${userIdStr}: House=${user?.house}, IsAdmin=${ADMIN_USERS.includes(user?.username)}, SocketId=${socketId}, Online=${user?.online}`);
+        
+        if (user && user.house === house && !ADMIN_USERS.includes(user.username) && !sentTo.has(userIdStr)) {
+          sentTo.add(userIdStr); // Mark as sent to prevent duplicates
           
           // Use the emitNotification function with consistent data
           emitNotification(socketId);
           
-          console.log(`Sent house points update to ${userId} in ${house}`);
+          console.log(`[HOUSE_POINTS] Sent house points update to ${userIdStr} in ${house}`);
         }
       }
       
@@ -621,18 +731,31 @@ app.locals.broadcastHousePointsUpdate = (house, pointChange, newTotal, reason, s
 // NEW: Helper function to update user fields in real-time
 app.locals.updateUserInRealTime = (userId, updatedFields) => {
   try {
-    if (!userId || !activeConnections.has(userId)) return false;
+    if (!userId) return false;
     
-    const socketId = activeConnections.get(userId);
-    io.to(socketId).emit('sync_update', {
-      type: 'user_update',
-      timestamp: new Date().toISOString(),
-      data: {
-        updatedFields
-      }
-    });
+    // Ensure consistent string format for user ID
+    const userIdStr = userId.toString();
     
-    return true;
+    console.log(`[UPDATE_USER] Attempting to update user ${userIdStr} with fields:`, updatedFields);
+    console.log(`[UPDATE_USER] User online status: ${activeConnections.has(userIdStr) ? 'ONLINE' : 'OFFLINE'}`);
+    
+    if (activeConnections.has(userIdStr)) {
+      const socketId = activeConnections.get(userIdStr);
+      console.log(`[UPDATE_USER] Sending to socket: ${socketId}`);
+      
+      io.to(socketId).emit('sync_update', {
+        type: 'user_update',
+        timestamp: new Date().toISOString(),
+        data: {
+          updatedFields
+        }
+      });
+      
+      return true;
+    } else {
+      console.log(`[UPDATE_USER] User ${userIdStr} appears to be offline.`);
+      return false;
+    }
   } catch (error) {
     console.error('Error updating user in real-time:', error);
     return false;
@@ -641,10 +764,29 @@ app.locals.updateUserInRealTime = (userId, updatedFields) => {
 
 // Helper to format house points message
 const formatHousePointsMessage = (house, points, reason, criteria, level) => {
+  // Start with base message
   let message = `House ${house} has ${points > 0 ? 'gained' : 'lost'} ${Math.abs(points)} points!`;
-  if (criteria) message += ` Criteria: ${criteria}`;
-  if (level) message += ` Level: ${level}`;
-  if (reason && reason !== 'Admin action') message += ` Reason: ${reason}`;
+  
+  // Add details in a consistent format
+  const details = [];
+  
+  if (reason && reason !== 'Admin action' && reason.trim() !== '') {
+    details.push(`Reason: ${reason}`);
+  }
+  
+  if (criteria && criteria !== null && criteria.trim() !== '') {
+    details.push(`Criteria: ${criteria}`);
+  }
+  
+  if (level && level !== null && level.trim() !== '') {
+    details.push(`Level: ${level}`);
+  }
+  
+  // Join all details with periods
+  if (details.length > 0) {
+    message += `. ${details.join('. ')}`;
+  }
+  
   return message;
 };
 
