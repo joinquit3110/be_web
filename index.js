@@ -109,6 +109,105 @@ const userStatus = new Map(); // userId -> { online: boolean, lastSeen: Date }
 // Track recent house point updates to prevent duplicates
 const recentHousePointsUpdates = new Map();
 
+// Add notification batching and caching
+const notificationCache = new Map();
+const notificationBatch = new Map();
+const BATCH_TIMEOUT = 100; // ms
+const MAX_BATCH_SIZE = 10;
+
+// Helper to process notification batch
+const processNotificationBatch = (room) => {
+  const batch = notificationBatch.get(room);
+  if (!batch || batch.length === 0) return;
+  
+  try {
+    // Sort by priority and timestamp
+    batch.sort((a, b) => {
+      const priorityA = getNotificationPriority(a);
+      const priorityB = getNotificationPriority(b);
+      if (priorityA !== priorityB) return priorityB - priorityA;
+      return new Date(b.timestamp) - new Date(a.timestamp);
+    });
+    
+    // Take only the most important notifications
+    const notificationsToSend = batch.slice(0, MAX_BATCH_SIZE);
+    
+    // Send batch to room
+    io.to(room).emit('notification_batch', {
+      notifications: notificationsToSend,
+      timestamp: new Date().toISOString()
+    });
+    
+    // Clear batch
+    notificationBatch.set(room, []);
+    
+    // Update cache
+    notificationsToSend.forEach(notification => {
+      const cacheKey = `${room}:${notification.id}`;
+      notificationCache.set(cacheKey, {
+        notification,
+        timestamp: Date.now()
+      });
+    });
+    
+  } catch (error) {
+    console.error('Error processing notification batch:', error);
+  }
+};
+
+// Helper to determine notification priority
+const getNotificationPriority = (notification) => {
+  if (notification.type === 'error') return 4;
+  if (notification.type === 'warning') return 3;
+  if (notification.type === 'success') return 2;
+  if (notification.type === 'announcement') return 1;
+  return 0;
+};
+
+// Optimize notification sending
+const sendNotification = (room, notification) => {
+  try {
+    // Check cache for duplicate
+    const cacheKey = `${room}:${notification.id}`;
+    const cached = notificationCache.get(cacheKey);
+    
+    if (cached && Date.now() - cached.timestamp < 5000) {
+      return false; // Skip if recently sent
+    }
+    
+    // Add to batch
+    if (!notificationBatch.has(room)) {
+      notificationBatch.set(room, []);
+    }
+    
+    const batch = notificationBatch.get(room);
+    batch.push(notification);
+    
+    // Process batch if it's full
+    if (batch.length >= MAX_BATCH_SIZE) {
+      processNotificationBatch(room);
+    } else {
+      // Schedule batch processing
+      setTimeout(() => processNotificationBatch(room), BATCH_TIMEOUT);
+    }
+    
+    return true;
+  } catch (error) {
+    console.error('Error sending notification:', error);
+    return false;
+  }
+};
+
+// Cleanup old cache entries periodically
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, value] of notificationCache.entries()) {
+    if (now - value.timestamp > 60000) { // 1 minute
+      notificationCache.delete(key);
+    }
+  }
+}, 30000); // Run every 30 seconds
+
 // Socket.IO connection handling
 io.on('connection', (socket) => {
   console.log('New client connected', socket.id);
@@ -197,56 +296,61 @@ io.on('connection', (socket) => {
   });
   
   // NEW: Handle admin house points update
-  socket.on('admin_house_points', ({ house, points, reason }) => {
-    // Verify that this is coming from an admin (should also be validated server-side)
-    // This is a simplified example - in production, use proper authentication
-    if (house && points) {
-      console.log(`Admin updating ${house} points by ${points}. Reason: ${reason}`);
-      
-      // Broadcast to all users in that house
-      io.to(house).emit('house_points_update', {
-        house,
-        points,
-        newTotal: 0, // This would be calculated from the database
-        reason,
-        timestamp: new Date().toISOString()
-      });
-    }
+  socket.on('admin_house_points', ({ house, points, reason, criteria, level }) => {
+    if (!house || !points) return;
+    
+    console.log(`Admin updating ${house} points by ${points}. Reason: ${reason}`);
+    
+    const notification = {
+      id: `house_points_${house}_${points}_${Date.now()}`,
+      type: points > 0 ? 'success' : 'warning',
+      title: points > 0 ? 'POINTS AWARDED!' : 'POINTS DEDUCTED!',
+      message: formatHousePointsMessage(house, points, reason, criteria, level),
+      timestamp: new Date().toISOString(),
+      points,
+      reason,
+      criteria,
+      level
+    };
+    
+    sendNotification(house, notification);
   });
   
   // NEW: Handle admin targeted notification
   socket.on('admin_notification', ({ targetUser, targetHouse, message, notificationType }) => {
-    console.log(`Admin sending notification - Target user: ${targetUser}, Target house: ${targetHouse}`);
+    const notification = {
+      id: `admin_${Date.now()}`,
+      type: notificationType || 'info',
+      message,
+      timestamp: new Date().toISOString()
+    };
     
-    // Send to specific user if provided
     if (targetUser && activeConnections.has(targetUser)) {
-      const targetSocketId = activeConnections.get(targetUser);
-      io.to(targetSocketId).emit('admin_notification', {
-        message,
-        notificationType: notificationType || 'info',
-        timestamp: new Date().toISOString()
-      });
+      const socketId = activeConnections.get(targetUser);
+      const user = userStatus.get(targetUser);
+      if (user) {
+        sendNotification(user.house, notification);
+      }
     }
     
-    // Send to entire house if provided
     if (targetHouse) {
-      io.to(targetHouse).emit('admin_notification', {
-        message,
-        notificationType: notificationType || 'info',
-        timestamp: new Date().toISOString()
-      });
+      sendNotification(targetHouse, notification);
     }
   });
   
   // NEW: Handle global announcement from admin
   socket.on('global_announcement', ({ message }) => {
-    console.log(`Admin sending global announcement: ${message}`);
-    
-    // Broadcast to all connected clients
-    io.emit('global_announcement', {
-      message,
+    const notification = {
+      id: `announcement_${Date.now()}`,
+      type: 'announcement',
+      message: `ANNOUNCEMENT: ${message}`,
       timestamp: new Date().toISOString()
-    });
+    };
+    
+    // Send to all rooms
+    for (const [room] of notificationBatch) {
+      sendNotification(room, notification);
+    }
   });
   
   // Handle force sync request from client
@@ -529,6 +633,15 @@ app.locals.updateUserInRealTime = (userId, updatedFields) => {
     console.error('Error updating user in real-time:', error);
     return false;
   }
+};
+
+// Helper to format house points message
+const formatHousePointsMessage = (house, points, reason, criteria, level) => {
+  let message = `House ${house} has ${points > 0 ? 'gained' : 'lost'} ${Math.abs(points)} points!`;
+  if (criteria) message += ` Criteria: ${criteria}`;
+  if (level) message += ` Level: ${level}`;
+  if (reason && reason !== 'Admin action') message += ` Reason: ${reason}`;
+  return message;
 };
 
 // Add version prefix to all routes
