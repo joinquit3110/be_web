@@ -24,20 +24,31 @@ app.use(cors({
     'capacitor://localhost',            // Mobile app via Capacitor
     'http://localhost',                 // Alternative local development
     'http://localhost:8080',            // Another common local port
-    'http://localhost:8100',            // Ionic default port
-    '*'                                 // Allow all origins in development (remove in production)
+    'http://localhost:8100'             // Ionic default port
   ],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-  credentials: true, // Allow cookies
+  credentials: true,
   preflightContinue: false,
   optionsSuccessStatus: 204
 }));
 
 // Set additional headers for better CORS handling
 app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (origin && [
+    'https://fe-web-lilac.vercel.app',
+    'http://localhost:3000',
+    'https://inequality-web.vercel.app',
+    'https://mw15w-5173.csb.app',
+    'capacitor://localhost',
+    'http://localhost',
+    'http://localhost:8080',
+    'http://localhost:8100'
+  ].includes(origin)) {
+    res.header('Access-Control-Allow-Origin', origin);
+  }
   res.header('Access-Control-Allow-Credentials', 'true');
-  res.header('Access-Control-Allow-Origin', req.headers.origin);
   res.header('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,PATCH,OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Origin,X-Requested-With,Content-Type,Accept,Authorization');
   next();
@@ -91,14 +102,32 @@ const socketIO = require('socket.io');
 const server = require('http').createServer(app);
 const io = socketIO(server, {
   cors: {
-    origin: process.env.FRONTEND_URL || '*',
+    origin: [
+      'https://fe-web-lilac.vercel.app',
+      'http://localhost:3000',
+      'https://inequality-web.vercel.app',
+      'https://mw15w-5173.csb.app',
+      'capacitor://localhost',
+      'http://localhost',
+      'http://localhost:8080',
+      'http://localhost:8100'
+    ],
     methods: ['GET', 'POST'],
-    credentials: true
+    credentials: true,
+    allowedHeaders: ['Content-Type', 'Authorization']
   },
-  pingTimeout: 30000,
-  pingInterval: 10000,
-  connectTimeout: 20000,
-  transports: ['websocket', 'polling']
+  pingTimeout: 60000,
+  pingInterval: 25000,
+  connectTimeout: 45000,
+  transports: ['websocket', 'polling'],
+  path: '/socket.io/',
+  allowEIO3: true,
+  cookie: {
+    name: 'io',
+    path: '/',
+    httpOnly: true,
+    sameSite: 'lax'
+  }
 });
 
 // Admin users constant for filtering notifications
@@ -472,24 +501,18 @@ io.on('connection', (socket) => {
     }
   });
   
-  // Handle disconnect
-  socket.on('disconnect', () => {
-    // Remove user from activeConnections
+  // Handle disconnection
+  socket.on('disconnect', (reason) => {
+    console.log(`Client disconnected: ${socket.id}, reason: ${reason}`);
     if (authenticatedUserId) {
       activeConnections.delete(authenticatedUserId);
-      
-      // Update online status
-      if (userStatus.has(authenticatedUserId)) {
-        const status = userStatus.get(authenticatedUserId);
+      const status = userStatus.get(authenticatedUserId);
+      if (status) {
         status.online = false;
         status.lastSeen = new Date();
         userStatus.set(authenticatedUserId, status);
       }
-      
-      console.log(`User ${authenticatedUserId} disconnected`);
     }
-    
-    console.log(`Client disconnected ${socket.id}, remaining connections: ${activeConnections.size}`);
   });
 });
 
