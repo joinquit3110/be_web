@@ -10,7 +10,6 @@ const magicPointsRoutes = require('./routes/magicPoints');
 const userRoutes = require('./routes/users');
 const notificationsRoutes = require('./routes/notifications');
 const path = require('path');
-const jwt = require('jsonwebtoken');
 
 const app = express();
 
@@ -24,31 +23,20 @@ app.use(cors({
     'capacitor://localhost',            // Mobile app via Capacitor
     'http://localhost',                 // Alternative local development
     'http://localhost:8080',            // Another common local port
-    'http://localhost:8100'             // Ionic default port
+    'http://localhost:8100',            // Ionic default port
+    '*'                                 // Allow all origins in development (remove in production)
   ],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-  credentials: true,
+  credentials: true, // Allow cookies
   preflightContinue: false,
   optionsSuccessStatus: 204
 }));
 
 // Set additional headers for better CORS handling
 app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  if (origin && [
-    'https://fe-web-lilac.vercel.app',
-    'http://localhost:3000',
-    'https://inequality-web.vercel.app',
-    'https://mw15w-5173.csb.app',
-    'capacitor://localhost',
-    'http://localhost',
-    'http://localhost:8080',
-    'http://localhost:8100'
-  ].includes(origin)) {
-    res.header('Access-Control-Allow-Origin', origin);
-  }
   res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Allow-Origin', req.headers.origin);
   res.header('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,PATCH,OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Origin,X-Requested-With,Content-Type,Accept,Authorization');
   next();
@@ -102,32 +90,12 @@ const socketIO = require('socket.io');
 const server = require('http').createServer(app);
 const io = socketIO(server, {
   cors: {
-    origin: [
-      'https://fe-web-lilac.vercel.app',
-      'http://localhost:3000',
-      'https://inequality-web.vercel.app',
-      'https://mw15w-5173.csb.app',
-      'capacitor://localhost',
-      'http://localhost',
-      'http://localhost:8080',
-      'http://localhost:8100'
-    ],
+    origin: '*', // Allow all origins in development
     methods: ['GET', 'POST'],
-    credentials: true,
-    allowedHeaders: ['Content-Type', 'Authorization']
+    credentials: true
   },
-  pingTimeout: 60000,
-  pingInterval: 25000,
-  connectTimeout: 45000,
-  transports: ['websocket', 'polling'],
-  path: '/socket.io/',
-  allowEIO3: true,
-  cookie: {
-    name: 'io',
-    path: '/',
-    httpOnly: true,
-    sameSite: 'lax'
-  }
+  pingTimeout: 30000, // How long to wait before considering a client disconnected
+  pingInterval: 10000, // How often to ping clients to check connection
 });
 
 // Admin users constant for filtering notifications
@@ -246,110 +214,44 @@ io.on('connection', (socket) => {
   let authenticatedUserId = null;
   
   // Handle user authentication
-  socket.on('authenticate', async (userData) => {
-    try {
-      // Debug log the authentication attempt
-      console.log('Authentication attempt:', JSON.stringify({
-        hasData: !!userData,
-        hasToken: userData && !!userData.token,
-        username: userData && userData.username,
-        socket: socket.id
-      }));
+  socket.on('authenticate', (userData) => {
+    if (userData && userData.userId) {
+      // Ensure userId is always a string for consistent comparison
+      authenticatedUserId = userData.userId.toString();
       
-      if (!userData) {
-        throw new Error('Missing authentication data');
+      // Store user connection for targeted updates
+      activeConnections.set(authenticatedUserId, socket.id);
+      
+      // Update online status
+      userStatus.set(authenticatedUserId, { 
+        online: true, 
+        lastSeen: new Date(),
+        house: userData.house || null,
+        username: userData.username || null
+      });
+      
+      // Join user to their house room if available
+      if (userData.house) {
+        socket.join(userData.house);
+        console.log(`User ${authenticatedUserId} joined house ${userData.house}`);
+        
+        // Also join a role-based room
+        const role = userData.isAdmin ? 'admin' : 'student';
+        socket.join(role);
       }
       
-      if (!userData.token) {
-        throw new Error('Missing authentication token');
-      }
-
-      // Verify token
-      try {
-        const verified = jwt.verify(userData.token, process.env.JWT_SECRET);
-        if (!verified || !verified.id) {
-          throw new Error('Invalid token or missing user ID');
-        }
-
-        // Ensure userId is always a string for consistent comparison
-        authenticatedUserId = verified.id.toString();
-        
-        // Store user connection for targeted updates
-        activeConnections.set(authenticatedUserId, socket.id);
-        
-        // Update online status
-        userStatus.set(authenticatedUserId, { 
-          online: true, 
-          lastSeen: new Date(),
-          house: verified.house || null,
-          username: verified.username || null,
-          isAdmin: ADMIN_USERS.includes(verified.username) || verified.house === 'admin'
-        });
-        
-        // Join user to their house room if available
-        if (verified.house) {
-          socket.join(verified.house);
-          console.log(`User ${authenticatedUserId} joined house ${verified.house}`);
-          
-          // Also join a role-based room
-          const role = verified.isAdmin ? 'admin' : 'student';
-          socket.join(role);
-        }
-        
-        // Join admin broadcast channel for system-wide announcements
-        socket.join('system-updates');
-        
-        console.log(`User ${authenticatedUserId} authenticated, socket ID: ${socket.id}`);
-        console.log(`Active connections: ${activeConnections.size}`);
-        
-        // Notify user they are connected
-        socket.emit('connection_status', { 
-          connected: true, 
-          timestamp: new Date().toISOString(),
-          message: 'Successfully connected to real-time updates'
-        });
-
-        // Send any pending notifications
-        const pendingNotifications = notificationCache.get(authenticatedUserId);
-        if (pendingNotifications && pendingNotifications.length > 0) {
-          pendingNotifications.forEach(notification => {
-            socket.emit('admin_notification', notification);
-          });
-          notificationCache.delete(authenticatedUserId);
-        }
-      } catch (tokenError) {
-        console.error('Token verification error:', tokenError.message);
-        socket.emit('auth_error', { message: 'Invalid authentication token' });
-        socket.disconnect();
-      }
-    } catch (error) {
-      console.error('Authentication error:', error);
-      socket.emit('auth_error', { message: error.message || 'Authentication failed' });
-      socket.disconnect();
-    }
-  });
-  
-  // Set a timeout to disconnect if not authenticated within 10 seconds
-  const authTimeout = setTimeout(() => {
-    if (!authenticatedUserId) {
-      console.log(`Socket ${socket.id} not authenticated within timeout, disconnecting`);
-      socket.emit('auth_error', { message: 'Authentication timeout' });
-      socket.disconnect();
-    }
-  }, 10000);
-  
-  // Clear the timeout on successful auth or disconnect
-  socket.on('disconnect', (reason) => {
-    clearTimeout(authTimeout);
-    console.log(`Client disconnected: ${socket.id}, reason: ${reason}`);
-    if (authenticatedUserId) {
-      activeConnections.delete(authenticatedUserId);
-      const status = userStatus.get(authenticatedUserId);
-      if (status) {
-        status.online = false;
-        status.lastSeen = new Date();
-        userStatus.set(authenticatedUserId, status);
-      }
+      // Join admin broadcast channel for system-wide announcements
+      socket.join('system-updates');
+      
+      console.log(`User ${authenticatedUserId} authenticated, socket ID: ${socket.id}`);
+      console.log(`Active connections: ${activeConnections.size}`);
+      
+      // Notify user they are connected
+      socket.emit('connection_status', { 
+        connected: true, 
+        timestamp: new Date().toISOString(),
+        message: 'Successfully connected to real-time updates'
+      });
     }
   });
   
@@ -454,53 +356,67 @@ io.on('connection', (socket) => {
   });
   
   // Handle client-sent house point notifications (direct from frontend)
-  socket.on('client_house_notification', async (data) => {
+  socket.on('client_house_notification', (data) => {
     try {
-      if (!authenticatedUserId) {
-        throw new Error('Not authenticated');
-      }
-
-      const userInfo = userStatus.get(authenticatedUserId);
-      if (!userInfo || !userInfo.isAdmin) {
-        throw new Error('Unauthorized');
-      }
-
       const { house, points, reason, criteria, level, newTotal } = data;
       
+      console.log('[SOCKET] Received client_house_notification:', JSON.stringify(data));
+      
       if (!house || points === undefined) {
-        throw new Error('Invalid notification data');
-      }
-
-      // Create unique key for deduplication
-      const updateKey = `${house}_${points}_${Date.now()}`;
-      if (recentHousePointsUpdates.has(updateKey)) {
-        console.log('Skipping duplicate house points update');
+        console.log('[SOCKET] Ignoring invalid client_house_notification:', data);
         return;
       }
-
-      // Store update key with expiry
-      recentHousePointsUpdates.set(updateKey, Date.now());
-      setTimeout(() => {
-        recentHousePointsUpdates.delete(updateKey);
-      }, 5000);
-
-      // Broadcast to house room
-      io.to(house).emit('house_points_update', {
-        house,
-        points,
-        reason,
-        criteria,
-        level,
-        newTotal,
-        timestamp: new Date().toISOString()
-      });
-
-      // Log the update
-      console.log(`House points update: ${house} ${points} points, reason: ${reason || 'None'}`);
+      
+      // Enhanced logging
+      console.log(`[SOCKET] Processing client house notification: ${house} ${points} points, reason: ${reason || 'None'}`);
+      console.log(`[SOCKET] Auth user ID: ${authenticatedUserId || 'Not authenticated'}`);
+      
+      // Get user info to determine if they're an admin
+      if (authenticatedUserId) {
+        // Check user info with consistent string ID
+        const userInfo = userStatus.get(authenticatedUserId);
+        
+        console.log(`[SOCKET] User info for ${authenticatedUserId}:`, userInfo ? 
+          JSON.stringify({
+            house: userInfo.house,
+            username: userInfo.username,
+            isAdmin: ADMIN_USERS.includes(userInfo.username)
+          }) : 'Not found');
+        
+        const isAdmin = userInfo && (userInfo.house === 'admin' || ADMIN_USERS.includes(userInfo.username));
+        
+        if (isAdmin) {
+          // Use the same function that server-side updates use
+          console.log(`[SOCKET] User ${authenticatedUserId} is admin, broadcasting house points update`);
+          
+          app.locals.broadcastHousePointsUpdate(
+            house, 
+            points, 
+            newTotal || null, 
+            reason || 'Admin action', 
+            false, // Don't skip admin
+            criteria, 
+            level
+          );
+        } else {
+          console.log(`[SOCKET] Rejected house notification from non-admin user: ${authenticatedUserId}`);
+          // Send a notice back to the user that they lack permission
+          socket.emit('error_notification', {
+            message: 'You do not have permission to update house points',
+            timestamp: new Date().toISOString()
+          });
+        }
+      } else {
+        console.log('[SOCKET] Rejected unauthenticated house notification');
+        socket.emit('error_notification', {
+          message: 'Authentication required to update house points',
+          timestamp: new Date().toISOString()
+        });
+      }
     } catch (error) {
-      console.error('Error processing house points update:', error);
+      console.error('[SOCKET] Error processing client_house_notification:', error);
       socket.emit('error_notification', {
-        message: error.message,
+        message: 'Server error processing your request',
         timestamp: new Date().toISOString()
       });
     }
@@ -541,6 +457,26 @@ io.on('connection', (socket) => {
       // Otherwise, emit an event back
       socket.emit('online_users', { users: onlineUsers });
     }
+  });
+  
+  // Handle disconnect
+  socket.on('disconnect', () => {
+    // Remove user from activeConnections
+    if (authenticatedUserId) {
+      activeConnections.delete(authenticatedUserId);
+      
+      // Update online status
+      if (userStatus.has(authenticatedUserId)) {
+        const status = userStatus.get(authenticatedUserId);
+        status.online = false;
+        status.lastSeen = new Date();
+        userStatus.set(authenticatedUserId, status);
+      }
+      
+      console.log(`User ${authenticatedUserId} disconnected`);
+    }
+    
+    console.log(`Client disconnected ${socket.id}, remaining connections: ${activeConnections.size}`);
   });
 });
 
@@ -586,19 +522,25 @@ app.locals.sendRealTimeNotification = (options) => {
   try {
     // Option 1: Send to specific user
     if (userId) {
+      // Ensure userId is always a string
       const userIdStr = userId.toString();
+      
+      // Add detailed logging to track the issue
+      console.log(`[NOTIFICATION] Attempting to send to user: ${userIdStr}`);
+      console.log(`[NOTIFICATION] User online status: ${activeConnections.has(userIdStr) ? 'ONLINE' : 'OFFLINE'}`);
       
       if (activeConnections.has(userIdStr)) {
         // Check if user is an admin and we should skip admins
         if (skipAdmin === "true" || skipAdmin === true) {
           const user = userStatus.get(userIdStr);
           if (user && ADMIN_USERS.includes(user.username)) {
-            console.log(`Skipping admin user: ${userIdStr}`);
-            return false;
+            console.log(`[NOTIFICATION] Skipping admin user: ${userIdStr}`);
+            return false; // Skip sending to admin
           }
         }
         
         const socketId = activeConnections.get(userIdStr);
+        console.log(`[NOTIFICATION] Sending to socket: ${socketId}`);
         
         io.to(socketId).emit('admin_notification', {
           message,
@@ -612,24 +554,13 @@ app.locals.sendRealTimeNotification = (options) => {
         });
         return true;
       } else {
-        // Store notification for when user comes back online
-        const pendingNotifications = notificationCache.get(userIdStr) || [];
-        pendingNotifications.push({
-          message,
-          notificationType: type || 'info',
-          title,
-          timestamp: new Date().toISOString(),
-          skipAdmin,
-          reason,
-          criteria,
-          level
-        });
-        notificationCache.set(userIdStr, pendingNotifications);
+        console.log(`[NOTIFICATION] User ${userIdStr} appears to be offline.`);
       }
     }
     
     // Option 2: Send to an entire house
     if (house) {
+      // If skipAdmin is true, we need to filter out admin sockets from the house room
       if (skipAdmin === "true" || skipAdmin === true) {
         // Get all sockets in the house room
         const socketsInHouse = [];
@@ -686,17 +617,9 @@ app.locals.broadcastHousePointsUpdate = (house, pointChange, newTotal, reason, s
     
     // Debug logging
     console.log(`[HOUSE_POINTS] Broadcasting update to ${house}: ${pointChange} points`);
-    console.log(`[HOUSE_POINTS] Detailed parameters:`, {
-      house,
-      pointChange,
-      newTotal,
-      reason: reason || 'No reason provided',
-      skipAdmin: skipAdmin === true || skipAdmin === "true",
-      criteria: criteria || 'No criteria',
-      level: level || 'No level'
-    });
     console.log(`[HOUSE_POINTS] Active connections: ${activeConnections.size}`);
-
+    console.log(`[HOUSE_POINTS] Connected users in ${house} house:`);
+    
     // Log all users in this house
     const usersInHouse = [];
     for (const [userId, status] of userStatus.entries()) {
@@ -734,9 +657,6 @@ app.locals.broadcastHousePointsUpdate = (house, pointChange, newTotal, reason, s
     // Extract criteria and level from arguments or reason if available
     let _criteria = criteria;
     let _level = level;
-    
-    console.log('[HOUSE_POINTS] Input criteria and level:', { criteria, level });
-    
     if (!_criteria || !_level) {
       if (reason) {
         const criteriaMatch = reason.match(/[Cc]riteria:?:?\s*(.+?)(?=\.|$|\s*Level:|\s*Reason:)/);
@@ -745,8 +665,6 @@ app.locals.broadcastHousePointsUpdate = (house, pointChange, newTotal, reason, s
         if (levelMatch) _level = levelMatch[1].trim();
       }
     }
-    
-    console.log('[HOUSE_POINTS] Parsed criteria and level:', { _criteria, _level });
     
     // Create a consistent timestamp for all notifications
     const timestamp = new Date().toISOString();
@@ -762,8 +680,6 @@ app.locals.broadcastHousePointsUpdate = (house, pointChange, newTotal, reason, s
       timestamp,
       uniqueId: `house_points_${house}_${pointChange}_${Date.now()}`
     };
-    
-    console.log('[HOUSE_POINTS] Notification data being sent:', notificationData);
     
     // Create a broadcast function to ensure consistent data format
     const emitNotification = (socketId) => {
