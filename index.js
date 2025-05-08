@@ -248,66 +248,108 @@ io.on('connection', (socket) => {
   // Handle user authentication
   socket.on('authenticate', async (userData) => {
     try {
-      if (!userData || !userData.token) {
+      // Debug log the authentication attempt
+      console.log('Authentication attempt:', JSON.stringify({
+        hasData: !!userData,
+        hasToken: userData && !!userData.token,
+        username: userData && userData.username,
+        socket: socket.id
+      }));
+      
+      if (!userData) {
         throw new Error('Missing authentication data');
+      }
+      
+      if (!userData.token) {
+        throw new Error('Missing authentication token');
       }
 
       // Verify token
-      const verified = jwt.verify(userData.token, process.env.JWT_SECRET);
-      if (!verified || !verified.id) {
-        throw new Error('Invalid token');
-      }
+      try {
+        const verified = jwt.verify(userData.token, process.env.JWT_SECRET);
+        if (!verified || !verified.id) {
+          throw new Error('Invalid token or missing user ID');
+        }
 
-      // Ensure userId is always a string for consistent comparison
-      authenticatedUserId = verified.id.toString();
-      
-      // Store user connection for targeted updates
-      activeConnections.set(authenticatedUserId, socket.id);
-      
-      // Update online status
-      userStatus.set(authenticatedUserId, { 
-        online: true, 
-        lastSeen: new Date(),
-        house: verified.house || null,
-        username: verified.username || null,
-        isAdmin: ADMIN_USERS.includes(verified.username) || verified.house === 'admin'
-      });
-      
-      // Join user to their house room if available
-      if (verified.house) {
-        socket.join(verified.house);
-        console.log(`User ${authenticatedUserId} joined house ${verified.house}`);
+        // Ensure userId is always a string for consistent comparison
+        authenticatedUserId = verified.id.toString();
         
-        // Also join a role-based room
-        const role = verified.isAdmin ? 'admin' : 'student';
-        socket.join(role);
-      }
-      
-      // Join admin broadcast channel for system-wide announcements
-      socket.join('system-updates');
-      
-      console.log(`User ${authenticatedUserId} authenticated, socket ID: ${socket.id}`);
-      console.log(`Active connections: ${activeConnections.size}`);
-      
-      // Notify user they are connected
-      socket.emit('connection_status', { 
-        connected: true, 
-        timestamp: new Date().toISOString(),
-        message: 'Successfully connected to real-time updates'
-      });
-
-      // Send any pending notifications
-      const pendingNotifications = notificationCache.get(authenticatedUserId);
-      if (pendingNotifications && pendingNotifications.length > 0) {
-        pendingNotifications.forEach(notification => {
-          socket.emit('admin_notification', notification);
+        // Store user connection for targeted updates
+        activeConnections.set(authenticatedUserId, socket.id);
+        
+        // Update online status
+        userStatus.set(authenticatedUserId, { 
+          online: true, 
+          lastSeen: new Date(),
+          house: verified.house || null,
+          username: verified.username || null,
+          isAdmin: ADMIN_USERS.includes(verified.username) || verified.house === 'admin'
         });
-        notificationCache.delete(authenticatedUserId);
+        
+        // Join user to their house room if available
+        if (verified.house) {
+          socket.join(verified.house);
+          console.log(`User ${authenticatedUserId} joined house ${verified.house}`);
+          
+          // Also join a role-based room
+          const role = verified.isAdmin ? 'admin' : 'student';
+          socket.join(role);
+        }
+        
+        // Join admin broadcast channel for system-wide announcements
+        socket.join('system-updates');
+        
+        console.log(`User ${authenticatedUserId} authenticated, socket ID: ${socket.id}`);
+        console.log(`Active connections: ${activeConnections.size}`);
+        
+        // Notify user they are connected
+        socket.emit('connection_status', { 
+          connected: true, 
+          timestamp: new Date().toISOString(),
+          message: 'Successfully connected to real-time updates'
+        });
+
+        // Send any pending notifications
+        const pendingNotifications = notificationCache.get(authenticatedUserId);
+        if (pendingNotifications && pendingNotifications.length > 0) {
+          pendingNotifications.forEach(notification => {
+            socket.emit('admin_notification', notification);
+          });
+          notificationCache.delete(authenticatedUserId);
+        }
+      } catch (tokenError) {
+        console.error('Token verification error:', tokenError.message);
+        socket.emit('auth_error', { message: 'Invalid authentication token' });
+        socket.disconnect();
       }
     } catch (error) {
       console.error('Authentication error:', error);
-      socket.emit('auth_error', { message: 'Authentication failed' });
+      socket.emit('auth_error', { message: error.message || 'Authentication failed' });
       socket.disconnect();
+    }
+  });
+  
+  // Set a timeout to disconnect if not authenticated within 10 seconds
+  const authTimeout = setTimeout(() => {
+    if (!authenticatedUserId) {
+      console.log(`Socket ${socket.id} not authenticated within timeout, disconnecting`);
+      socket.emit('auth_error', { message: 'Authentication timeout' });
+      socket.disconnect();
+    }
+  }, 10000);
+  
+  // Clear the timeout on successful auth or disconnect
+  socket.on('disconnect', (reason) => {
+    clearTimeout(authTimeout);
+    console.log(`Client disconnected: ${socket.id}, reason: ${reason}`);
+    if (authenticatedUserId) {
+      activeConnections.delete(authenticatedUserId);
+      const status = userStatus.get(authenticatedUserId);
+      if (status) {
+        status.online = false;
+        status.lastSeen = new Date();
+        userStatus.set(authenticatedUserId, status);
+      }
     }
   });
   
@@ -498,20 +540,6 @@ io.on('connection', (socket) => {
     } else {
       // Otherwise, emit an event back
       socket.emit('online_users', { users: onlineUsers });
-    }
-  });
-  
-  // Handle disconnection
-  socket.on('disconnect', (reason) => {
-    console.log(`Client disconnected: ${socket.id}, reason: ${reason}`);
-    if (authenticatedUserId) {
-      activeConnections.delete(authenticatedUserId);
-      const status = userStatus.get(authenticatedUserId);
-      if (status) {
-        status.online = false;
-        status.lastSeen = new Date();
-        userStatus.set(authenticatedUserId, status);
-      }
     }
   });
 });
