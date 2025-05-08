@@ -10,6 +10,7 @@ const magicPointsRoutes = require('./routes/magicPoints');
 const userRoutes = require('./routes/users');
 const notificationsRoutes = require('./routes/notifications');
 const path = require('path');
+const jwt = require('jsonwebtoken');
 
 const app = express();
 
@@ -90,12 +91,14 @@ const socketIO = require('socket.io');
 const server = require('http').createServer(app);
 const io = socketIO(server, {
   cors: {
-    origin: '*', // Allow all origins in development
+    origin: process.env.FRONTEND_URL || '*',
     methods: ['GET', 'POST'],
     credentials: true
   },
-  pingTimeout: 30000, // How long to wait before considering a client disconnected
-  pingInterval: 10000, // How often to ping clients to check connection
+  pingTimeout: 30000,
+  pingInterval: 10000,
+  connectTimeout: 20000,
+  transports: ['websocket', 'polling']
 });
 
 // Admin users constant for filtering notifications
@@ -214,10 +217,20 @@ io.on('connection', (socket) => {
   let authenticatedUserId = null;
   
   // Handle user authentication
-  socket.on('authenticate', (userData) => {
-    if (userData && userData.userId) {
+  socket.on('authenticate', async (userData) => {
+    try {
+      if (!userData || !userData.token) {
+        throw new Error('Missing authentication data');
+      }
+
+      // Verify token
+      const verified = jwt.verify(userData.token, process.env.JWT_SECRET);
+      if (!verified || !verified.id) {
+        throw new Error('Invalid token');
+      }
+
       // Ensure userId is always a string for consistent comparison
-      authenticatedUserId = userData.userId.toString();
+      authenticatedUserId = verified.id.toString();
       
       // Store user connection for targeted updates
       activeConnections.set(authenticatedUserId, socket.id);
@@ -226,17 +239,18 @@ io.on('connection', (socket) => {
       userStatus.set(authenticatedUserId, { 
         online: true, 
         lastSeen: new Date(),
-        house: userData.house || null,
-        username: userData.username || null
+        house: verified.house || null,
+        username: verified.username || null,
+        isAdmin: ADMIN_USERS.includes(verified.username) || verified.house === 'admin'
       });
       
       // Join user to their house room if available
-      if (userData.house) {
-        socket.join(userData.house);
-        console.log(`User ${authenticatedUserId} joined house ${userData.house}`);
+      if (verified.house) {
+        socket.join(verified.house);
+        console.log(`User ${authenticatedUserId} joined house ${verified.house}`);
         
         // Also join a role-based room
-        const role = userData.isAdmin ? 'admin' : 'student';
+        const role = verified.isAdmin ? 'admin' : 'student';
         socket.join(role);
       }
       
@@ -252,6 +266,19 @@ io.on('connection', (socket) => {
         timestamp: new Date().toISOString(),
         message: 'Successfully connected to real-time updates'
       });
+
+      // Send any pending notifications
+      const pendingNotifications = notificationCache.get(authenticatedUserId);
+      if (pendingNotifications && pendingNotifications.length > 0) {
+        pendingNotifications.forEach(notification => {
+          socket.emit('admin_notification', notification);
+        });
+        notificationCache.delete(authenticatedUserId);
+      }
+    } catch (error) {
+      console.error('Authentication error:', error);
+      socket.emit('auth_error', { message: 'Authentication failed' });
+      socket.disconnect();
     }
   });
   
@@ -356,78 +383,53 @@ io.on('connection', (socket) => {
   });
   
   // Handle client-sent house point notifications (direct from frontend)
-  socket.on('client_house_notification', (data) => {
+  socket.on('client_house_notification', async (data) => {
     try {
+      if (!authenticatedUserId) {
+        throw new Error('Not authenticated');
+      }
+
+      const userInfo = userStatus.get(authenticatedUserId);
+      if (!userInfo || !userInfo.isAdmin) {
+        throw new Error('Unauthorized');
+      }
+
       const { house, points, reason, criteria, level, newTotal } = data;
       
-      console.log('[SOCKET] Received client_house_notification:', JSON.stringify(data));
-      console.log('[SOCKET] Notification details:', {
-        house, 
-        points, 
-        reason: reason || 'No reason provided', 
-        criteria: criteria || 'No criteria provided', 
-        level: level || 'No level provided'
-      });
-      
       if (!house || points === undefined) {
-        console.log('[SOCKET] Ignoring invalid client_house_notification:', data);
+        throw new Error('Invalid notification data');
+      }
+
+      // Create unique key for deduplication
+      const updateKey = `${house}_${points}_${Date.now()}`;
+      if (recentHousePointsUpdates.has(updateKey)) {
+        console.log('Skipping duplicate house points update');
         return;
       }
-      
-      // Enhanced logging
-      console.log(`[SOCKET] Processing client house notification: ${house} ${points} points, reason: ${reason || 'None'}`);
-      console.log(`[SOCKET] Criteria: ${criteria || 'None'}, Level: ${level || 'None'}`);
-      console.log(`[SOCKET] Auth user ID: ${authenticatedUserId || 'Not authenticated'}`);
-      
-      // Get user info to determine if they're an admin
-      if (authenticatedUserId) {
-        // Check user info with consistent string ID
-        const userInfo = userStatus.get(authenticatedUserId);
-        
-        console.log(`[SOCKET] User info for ${authenticatedUserId}:`, userInfo ? 
-          JSON.stringify({
-            house: userInfo.house,
-            username: userInfo.username,
-            isAdmin: ADMIN_USERS.includes(userInfo.username)
-          }) : 'Not found');
-        
-        const isAdmin = userInfo && (userInfo.house === 'admin' || ADMIN_USERS.includes(userInfo.username));
-        
-        if (isAdmin) {
-          // Use the same function that server-side updates use
-          console.log(`[SOCKET] User ${authenticatedUserId} is admin, broadcasting house points update`);
-          console.log(`[SOCKET] Passing reason "${reason}", criteria "${criteria}", level "${level}"`);
-          
-          const result = app.locals.broadcastHousePointsUpdate(
-            house, 
-            points, 
-            newTotal || null, 
-            reason || 'Admin action', 
-            false, // Don't skip admin
-            criteria, 
-            level
-          );
-          
-          console.log(`[SOCKET] broadcastHousePointsUpdate result: ${result ? 'Success' : 'Failed'}`);
-        } else {
-          console.log(`[SOCKET] Rejected house notification from non-admin user: ${authenticatedUserId}`);
-          // Send a notice back to the user that they lack permission
-          socket.emit('error_notification', {
-            message: 'You do not have permission to update house points',
-            timestamp: new Date().toISOString()
-          });
-        }
-      } else {
-        console.log('[SOCKET] Rejected unauthenticated house notification');
-        socket.emit('error_notification', {
-          message: 'Authentication required to update house points',
-          timestamp: new Date().toISOString()
-        });
-      }
+
+      // Store update key with expiry
+      recentHousePointsUpdates.set(updateKey, Date.now());
+      setTimeout(() => {
+        recentHousePointsUpdates.delete(updateKey);
+      }, 5000);
+
+      // Broadcast to house room
+      io.to(house).emit('house_points_update', {
+        house,
+        points,
+        reason,
+        criteria,
+        level,
+        newTotal,
+        timestamp: new Date().toISOString()
+      });
+
+      // Log the update
+      console.log(`House points update: ${house} ${points} points, reason: ${reason || 'None'}`);
     } catch (error) {
-      console.error('[SOCKET] Error processing client_house_notification:', error);
+      console.error('Error processing house points update:', error);
       socket.emit('error_notification', {
-        message: 'Server error processing your request',
+        message: error.message,
         timestamp: new Date().toISOString()
       });
     }
@@ -533,25 +535,19 @@ app.locals.sendRealTimeNotification = (options) => {
   try {
     // Option 1: Send to specific user
     if (userId) {
-      // Ensure userId is always a string
       const userIdStr = userId.toString();
-      
-      // Add detailed logging to track the issue
-      console.log(`[NOTIFICATION] Attempting to send to user: ${userIdStr}`);
-      console.log(`[NOTIFICATION] User online status: ${activeConnections.has(userIdStr) ? 'ONLINE' : 'OFFLINE'}`);
       
       if (activeConnections.has(userIdStr)) {
         // Check if user is an admin and we should skip admins
         if (skipAdmin === "true" || skipAdmin === true) {
           const user = userStatus.get(userIdStr);
           if (user && ADMIN_USERS.includes(user.username)) {
-            console.log(`[NOTIFICATION] Skipping admin user: ${userIdStr}`);
-            return false; // Skip sending to admin
+            console.log(`Skipping admin user: ${userIdStr}`);
+            return false;
           }
         }
         
         const socketId = activeConnections.get(userIdStr);
-        console.log(`[NOTIFICATION] Sending to socket: ${socketId}`);
         
         io.to(socketId).emit('admin_notification', {
           message,
@@ -565,13 +561,24 @@ app.locals.sendRealTimeNotification = (options) => {
         });
         return true;
       } else {
-        console.log(`[NOTIFICATION] User ${userIdStr} appears to be offline.`);
+        // Store notification for when user comes back online
+        const pendingNotifications = notificationCache.get(userIdStr) || [];
+        pendingNotifications.push({
+          message,
+          notificationType: type || 'info',
+          title,
+          timestamp: new Date().toISOString(),
+          skipAdmin,
+          reason,
+          criteria,
+          level
+        });
+        notificationCache.set(userIdStr, pendingNotifications);
       }
     }
     
     // Option 2: Send to an entire house
     if (house) {
-      // If skipAdmin is true, we need to filter out admin sockets from the house room
       if (skipAdmin === "true" || skipAdmin === true) {
         // Get all sockets in the house room
         const socketsInHouse = [];
