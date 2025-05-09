@@ -90,12 +90,12 @@ const socketIO = require('socket.io');
 const server = require('http').createServer(app);
 const io = socketIO(server, {
   cors: {
-    origin: '*', // Allow all origins in development
+    origin: ['https://inequality-web.vercel.app', 'http://localhost:3000', 'https://fe-web-lilac.vercel.app'], // Specify allowed origins
     methods: ['GET', 'POST'],
     credentials: true
   },
-  pingTimeout: 30000, // How long to wait before considering a client disconnected
-  pingInterval: 10000, // How often to ping clients to check connection
+  pingTimeout: 30000, 
+  pingInterval: 10000,
 });
 
 // Admin users constant for filtering notifications
