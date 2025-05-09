@@ -30,15 +30,8 @@ app.options('*', cors({
   optionsSuccessStatus: 204
 }));
 
-// Remove custom CORS headers to avoid conflicts with the cors middleware
-
 // Increase payload size limit for sync operations with many items
 app.use(express.json({ limit: '5mb' }));
-
-// Handle preflight requests explicitly
-app.options('*', (req, res) => {
-  res.status(204).end();
-});
 
 // Connect to MongoDB with updated configuration
 console.log('Attempting to connect to MongoDB...');
