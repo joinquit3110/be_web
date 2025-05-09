@@ -102,45 +102,40 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ message: 'Invalid password' });
     }
 
-    // For admin users (hungpro and vipro), ensure their house is set to "admin"
-    const adminUsers = ['hungpro', 'vipro'];
-    const isAdmin = adminUsers.includes(username);
-    
-    if (isAdmin && user.house !== 'admin') {
-      console.log(`Setting admin house for user ${username}`);
-      user.house = 'admin';
-      await user.save();
-    }
+    console.log('Login successful:', username);
 
-    // Create a token with more user information for proper authorization
+    // Include additional fields in the token payload
+    const ADMIN_USERS = ['hungpro', 'vipro'];
+    const isAdmin = ADMIN_USERS.includes(username) || user.house === 'admin' || user.role === 'admin';
+
+    // Create user token with complete information
+    const tokenPayload = {
+      id: user._id,
+      username: user.username,
+      house: isAdmin ? 'admin' : (user.house || null),
+      role: isAdmin ? 'admin' : (user.role || 'student'),
+      isAdmin
+    };
+
+    console.log('Token payload:', tokenPayload);
+    
+    // Sign the token with a 24-hour expiration
     const token = jwt.sign(
-      { 
-        id: user._id,
-        username: user.username,
-        house: user.house || 'muggle',
-        role: isAdmin ? 'admin' : 'student',
-        isAdmin: isAdmin
-      },
+      tokenPayload,
       process.env.JWT_SECRET,
       { expiresIn: '24h' }
     );
 
-    console.log('Login successful:', username);
-    console.log('Token payload:', {
-      username: user.username,
-      house: user.house,
-      role: isAdmin ? 'admin' : 'student',
-      isAdmin: isAdmin
-    });
-    
     res.json({
       token,
       user: {
         id: user._id,
         username: user.username,
         email: user.email,
-        house: user.house, // Include house in response
-        isAdmin: isAdmin // Explicitly set isAdmin flag
+        house: isAdmin ? 'admin' : (user.house || null), // Ensure house is admin for admins
+        role: isAdmin ? 'admin' : (user.role || 'student'), // Set admin role
+        isAdmin, // ES6 shorthand
+        magicPoints: user.magicPoints || 100 // Include magic points
       }
     });
   } catch (err) {

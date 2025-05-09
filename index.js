@@ -449,21 +449,41 @@ io.on('connection', (socket) => {
     }
   });
   
-  // Handle disconnect
-  socket.on('disconnect', () => {
+  // Handle disconnect with reason and retry logic
+  socket.on('disconnect', (reason) => {
+    console.log(`Client ${socket.id} disconnected. Reason: ${reason}`);
+    
     // Remove user from activeConnections
     if (authenticatedUserId) {
-      activeConnections.delete(authenticatedUserId);
+      // Check if this is the current socket for this user
+      // (user might have multiple connections)
+      const currentSocketId = activeConnections.get(authenticatedUserId);
       
-      // Update online status
-      if (userStatus.has(authenticatedUserId)) {
-        const status = userStatus.get(authenticatedUserId);
-        status.online = false;
-        status.lastSeen = new Date();
-        userStatus.set(authenticatedUserId, status);
+      if (currentSocketId === socket.id) {
+        // Only remove if this is the current socket
+        activeConnections.delete(authenticatedUserId);
+        
+        // Update online status
+        if (userStatus.has(authenticatedUserId)) {
+          const status = userStatus.get(authenticatedUserId);
+          status.online = false;
+          status.lastSeen = new Date();
+          status.lastDisconnectReason = reason;
+          userStatus.set(authenticatedUserId, status);
+        }
+        
+        console.log(`User ${authenticatedUserId} disconnected`);
+        
+        // Notify admin room about user disconnect
+        io.to('admin').emit('admin_update', {
+          type: 'user_disconnected',
+          userId: authenticatedUserId,
+          reason: reason,
+          timestamp: new Date().toISOString()
+        });
+      } else {
+        console.log(`Socket ${socket.id} disconnected but user ${authenticatedUserId} has another active connection: ${currentSocketId}`);
       }
-      
-      console.log(`User ${authenticatedUserId} disconnected`);
     }
     
     console.log(`Client disconnected ${socket.id}, remaining connections: ${activeConnections.size}`);

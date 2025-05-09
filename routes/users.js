@@ -300,19 +300,25 @@ router.post('/bulk-update', auth, requireAdmin, async (req, res) => {
         
         // Send real-time update if user is connected
         if (io) {
-          const socketId = activeConnections.get(userId.toString());
+          // Get the activeConnections from app
+          const activeConnections = req.app.get('activeConnections');
           
-          if (socketId) {
-            console.log(`User ${userId} is online. Sending direct update.`);
-            // User is online - send direct update
-            io.to(socketId).emit('sync_update', {
-              type: 'user_update',
-              data: {
-                userId: updatedUser._id,
-                updatedFields: updateFields
-              }
-            });
+          if (!activeConnections) {
+            console.error('activeConnections not found in app, cannot send socket updates');
+          } else {
+            const socketId = activeConnections.get(userId.toString());
             
+            if (socketId) {
+              console.log(`User ${userId} is online. Sending direct update.`);
+              // User is online - send direct update
+              io.to(socketId).emit('sync_update', {
+                type: 'user_update',
+                data: {
+                  userId: updatedUser._id,
+                  updatedFields: updateFields
+                }
+              });
+              
             // If house was updated, notify all users
             if (house !== undefined) {
               io.emit('global_update', {
