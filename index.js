@@ -13,37 +13,32 @@ const path = require('path');
 
 const app = express();
 
-// Enhanced CORS configuration for better offline/online synchronization
+// Simplified CORS configuration to prevent conflicts
 app.use(cors({
-  origin: [
-    'https://fe-web-lilac.vercel.app',  // Vercel frontend
-    'http://localhost:3000',            // Local development
-    'https://inequality-web.vercel.app', // Alternative frontend URL
-    'https://mw15w-5173.csb.app',       // CodeSandbox URL
-    'capacitor://localhost',            // Mobile app via Capacitor
-    'http://localhost',                 // Alternative local development
-    'http://localhost:8080',            // Another common local port
-    'http://localhost:8100',            // Ionic default port
-    '*'                                 // Allow all origins in development (remove in production)
-  ],
+  origin: ['https://fe-web-lilac.vercel.app', 'http://localhost:3000', 'https://inequality-web.vercel.app'],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-  credentials: true, // Allow cookies
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Origin', 'Accept'],
+  credentials: true,
   preflightContinue: false,
   optionsSuccessStatus: 204
 }));
 
-// Set additional headers for better CORS handling
-app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Credentials', 'true');
-  res.header('Access-Control-Allow-Origin', req.headers.origin);
-  res.header('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,PATCH,OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Origin,X-Requested-With,Content-Type,Accept,Authorization');
-  next();
-});
+// Handle OPTIONS requests explicitly 
+app.options('*', cors({
+  origin: ['https://fe-web-lilac.vercel.app', 'http://localhost:3000', 'https://inequality-web.vercel.app'],
+  credentials: true,
+  optionsSuccessStatus: 204
+}));
+
+// Remove custom CORS headers to avoid conflicts with the cors middleware
 
 // Increase payload size limit for sync operations with many items
 app.use(express.json({ limit: '5mb' }));
+
+// Handle preflight requests explicitly
+app.options('*', (req, res) => {
+  res.status(204).end();
+});
 
 // Connect to MongoDB with updated configuration
 console.log('Attempting to connect to MongoDB...');
@@ -90,12 +85,14 @@ const socketIO = require('socket.io');
 const server = require('http').createServer(app);
 const io = socketIO(server, {
   cors: {
-    origin: ['https://inequality-web.vercel.app', 'http://localhost:3000', 'https://fe-web-lilac.vercel.app'], // Specify allowed origins
-    methods: ['GET', 'POST'],
+    origin: ['https://fe-web-lilac.vercel.app', 'http://localhost:3000', 'https://inequality-web.vercel.app'],
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
     credentials: true
   },
   pingTimeout: 30000, 
   pingInterval: 10000,
+  transports: ['websocket', 'polling'] // Explicitly specify transports
 });
 
 // Admin users constant for filtering notifications
