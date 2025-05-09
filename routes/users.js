@@ -199,10 +199,16 @@ router.patch('/:id', auth, async (req, res) => {
 // Handle bulk user updates - improved version with resetAttempts support
 router.post('/bulk-update', auth, requireAdmin, async (req, res) => {
   try {
-    const { userIds, magicPoints, house, needsSync, resetAttempts, reason } = req.body;
+    const { userIds, magicPoints, house, needsSync, resetAttempts, reason, pointsChange, targetUserIdsForHousePoints } = req.body;
     
-    if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
-      return res.status(400).json({ message: 'Valid user IDs array required' });
+    // Determine the actual list of user IDs to process
+    let finalUserIds = userIds;
+    if (targetUserIdsForHousePoints && Array.isArray(targetUserIdsForHousePoints) && targetUserIdsForHousePoints.length > 0) {
+      finalUserIds = targetUserIdsForHousePoints;
+    }
+
+    if (!finalUserIds || !Array.isArray(finalUserIds) || finalUserIds.length === 0) {
+      return res.status(400).json({ message: 'Valid user IDs array required (userIds or targetUserIdsForHousePoints)' });
     }
     
     // We'll track results for each user
@@ -212,9 +218,24 @@ router.post('/bulk-update', auth, requireAdmin, async (req, res) => {
     // Get Socket.IO instance
     const io = req.app.get('io');
     
-    for (const userId of userIds) {
+    for (const userId of finalUserIds) { // Use finalUserIds here
       try {
         const updateFields = {};
+        let currentUserPoints = null;
+
+        // Fetch current user if pointsChange is used
+        if (pointsChange !== undefined) {
+          const userToUpdate = await User.findById(userId, 'magicPoints');
+          if (!userToUpdate) {
+            results.push({ 
+              userId, 
+              success: false, 
+              message: 'User not found for pointsChange operation' 
+            });
+            continue;
+          }
+          currentUserPoints = userToUpdate.magicPoints;
+        }
         
         // Add fields to update based on what was provided
         if (house !== undefined) {
@@ -232,6 +253,9 @@ router.post('/bulk-update', auth, requireAdmin, async (req, res) => {
         
         if (magicPoints !== undefined) {
           updateFields.magicPoints = Math.max(0, parseInt(magicPoints, 10));
+          updateFields.lastMagicPointsUpdate = new Date();
+        } else if (pointsChange !== undefined && currentUserPoints !== null) {
+          updateFields.magicPoints = Math.max(0, currentUserPoints + parseInt(pointsChange, 10));
           updateFields.lastMagicPointsUpdate = new Date();
         }
         
@@ -300,8 +324,8 @@ router.post('/bulk-update', auth, requireAdmin, async (req, res) => {
               });
             }
             
-            // If points were updated, notify house members
-            if (magicPoints !== undefined && updatedUser.house) {
+            // If points were updated (either by magicPoints or pointsChange), notify house members
+            if ((magicPoints !== undefined || pointsChange !== undefined) && updatedUser.house) {
               io.to(updatedUser.house).emit('house_update', {
                 type: 'member_points_changed',
                 userId: updatedUser._id,
