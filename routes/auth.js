@@ -98,9 +98,15 @@ router.post('/login', async (req, res) => {
     }
 
     // Determine admin status based on DB record and ADMIN_USERS list
-    const ADMIN_USERS_LIST = (process.env.ADMIN_USERS_CSV || 'hungpro,vipro').split(',');
+    const adminUsersEnv = process.env.ADMIN_USERS_CSV || 'hungpro,vipro';  // Default admin users
+    const ADMIN_USERS_LIST = adminUsersEnv.split(',').map(u => u.trim()).filter(u => u);
+    
+    // Always include default admins for safety in addition to environment variable
+    if (!ADMIN_USERS_LIST.includes('hungpro')) ADMIN_USERS_LIST.push('hungpro');
+    if (!ADMIN_USERS_LIST.includes('vipro')) ADMIN_USERS_LIST.push('vipro');
+    
     const isAdmin = ADMIN_USERS_LIST.includes(user.username) || user.role === 'admin' || user.house === 'admin';
-    console.log(`[Login] User: ${user.username}, DB isAdmin check: ${isAdmin}, Role: ${user.role}, House: ${user.house}`);
+    console.log(`[Login] User: ${user.username}, DB isAdmin check: ${isAdmin}, Role: ${user.role}, House: ${user.house}, In admin list: ${ADMIN_USERS_LIST.includes(user.username)}, ADMIN_LIST: [${ADMIN_USERS_LIST.join(', ')}]`);
 
     const payload = {
       id: user._id,
@@ -182,9 +188,15 @@ router.get('/verify', auth, async (req, res) => {
     }
 
     // Re-evaluate admin status based on current DB record for freshness and security
-    const ADMIN_USERS_LIST = (process.env.ADMIN_USERS_CSV || 'hungpro,vipro').split(',');
+    const adminUsersEnv = process.env.ADMIN_USERS_CSV || 'hungpro,vipro';  // Default admin users
+    const ADMIN_USERS_LIST = adminUsersEnv.split(',').map(u => u.trim()).filter(u => u);
+    
+    // Always include default admins for safety in addition to environment variable
+    if (!ADMIN_USERS_LIST.includes('hungpro')) ADMIN_USERS_LIST.push('hungpro');
+    if (!ADMIN_USERS_LIST.includes('vipro')) ADMIN_USERS_LIST.push('vipro');
+    
     const isAdminDB = ADMIN_USERS_LIST.includes(userFromDB.username) || userFromDB.role === 'admin' || userFromDB.house === 'admin';
-    console.log(`[Verify] User: ${userFromDB.username}, DB isAdmin check: ${isAdminDB}, Role: ${userFromDB.role}, House: ${userFromDB.house}`);
+    console.log(`[Verify] User: ${userFromDB.username}, DB isAdmin check: ${isAdminDB}, Role: ${userFromDB.role}, House: ${userFromDB.house}, In admin list: ${ADMIN_USERS_LIST.includes(userFromDB.username)}, ADMIN_LIST: [${ADMIN_USERS_LIST.join(', ')}]`);
 
     res.json({
       authenticated: true,
