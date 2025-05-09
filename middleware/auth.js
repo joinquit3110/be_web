@@ -5,80 +5,83 @@ module.exports = function(req, res, next) {
   const token = req.header('Authorization')?.replace('Bearer ', '');
   
   if (!token) {
-    return res.status(401).json({ message: 'Access denied' });
+    return res.status(401).json({ message: 'No token, authorization denied' });
   }
 
   try {
-    const verified = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = verified;
-    
-    // Lookup the full user info from the database if needed
-    if (!req.user.username) {
-      // Find user info from the database later if needed
-      console.log('[Auth] JWT payload missing username, only has id:', req.user.id);
-    }
-    
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = decoded; // req.user will contain { id, username, house, role, isAdmin }
     next();
   } catch (err) {
-    console.error('[Auth] Token verification error:', err.message);
-    res.status(401).json({ message: 'Invalid token' });
+    console.error('Token verification failed:', err.message);
+    res.status(401).json({ message: 'Token is not valid' });
   }
 };
 
 // Middleware para verificar privilegios de administrador
 module.exports.requireAdmin = function(req, res, next) {
-  console.log('[Auth] requireAdmin: Entry'); // New log
-  // Debug admin auth checks
-  console.log('[Auth] requireAdmin: User data from req.user:', JSON.stringify(req.user)); // Changed log message for clarity
-
+  console.log('[Auth] requireAdmin: Entry');
+  
   if (!req.user) {
-    console.log('[Auth] requireAdmin: Failed - No user object in req');
-    return res.status(401).json({ message: 'Authentication required' });
+    console.error('[Auth] requireAdmin: No user object found in request. This should be set by the general auth middleware.');
+    return res.status(401).json({ message: 'Authentication required. No user data.' });
   }
 
-  const username = req.user.username;
-  console.log('[Auth] requireAdmin: Username from token:', username); // New log
+  console.log('[Auth] requireAdmin: User data from req.user:', JSON.stringify(req.user));
 
-  const ADMIN_USERS = ['hungpro', 'vipro'];
-  if (ADMIN_USERS.includes(username)) {
-    console.log(`[Auth] requireAdmin: Access granted to ${username} - Matched ADMIN_USERS list.`);
-    next();
-    return;
+  const { username, house, role, isAdmin } = req.user; // Destructure for easier access
+
+  // 1. Check explicit isAdmin flag from token (should be the most reliable if set correctly during login)
+  if (isAdmin === true) {
+    console.log(`[Auth] requireAdmin: User ${username || req.user.id} authorized based on isAdmin flag in token.`);
+    return next();
   }
-  console.log(`[Auth] requireAdmin: User ${username} not in ADMIN_USERS list. Checking house/role.`); // New log
+  console.log(`[Auth] requireAdmin: isAdmin flag is not true (value: ${isAdmin}). Proceeding with other checks.`);
 
-  if (req.user.house === 'admin') {
-    console.log(`[Auth] requireAdmin: Access granted to ${username || req.user.id} - Matched house 'admin'.`);
-    next();
-    return;
+  // 2. Check against ADMIN_USERS_LIST from environment variable
+  const adminUsersEnv = process.env.ADMIN_USERS_CSV || '';
+  // Ensure ADMIN_USERS_LIST is an array of strings, even if env var is empty or undefined
+  const ADMIN_USERS_LIST = adminUsersEnv ? adminUsersEnv.split(',').map(u => u.trim()).filter(u => u) : [];
+
+
+  if (username && ADMIN_USERS_LIST.length > 0 && ADMIN_USERS_LIST.includes(username)) {
+    console.log(`[Auth] requireAdmin: User ${username} authorized as admin from ADMIN_USERS_LIST.`);
+    return next();
   }
-  console.log(`[Auth] requireAdmin: User ${username || req.user.id} house is not 'admin' (it is ${req.user.house}). Checking role.`); // New log
-
-  if (req.user.role === 'admin') {
-    console.log(`[Auth] requireAdmin: Access granted to ${username || req.user.id} - Matched role 'admin'.`);
-    next();
-    return;
+  if (username) {
+    console.log(`[Auth] requireAdmin: User ${username} not in ADMIN_USERS_LIST (List: ${ADMIN_USERS_LIST.join(', ')}). Checking house/role.`);
+  } else {
+    console.log(`[Auth] requireAdmin: Username not present in token. Checking house/role.`);
   }
   
-  // Check the explicit isAdmin flag in the token
-  if (req.user.isAdmin === true) {
-    console.log(`[Auth] requireAdmin: Access granted to ${username || req.user.id} - Found isAdmin flag in token.`);
-    next();
-    return;
+
+  // 3. Check house (less common, but for completeness)
+  if (house === 'admin') {
+    console.log(`[Auth] requireAdmin: User ${username || req.user.id} authorized based on house 'admin'.`);
+    return next();
   }
-  
-  console.log(`[Auth] requireAdmin: User ${username || req.user.id} role is not 'admin' (it is ${req.user.role}) and isAdmin flag is ${req.user.isAdmin}. Denying access.`);
+  console.log(`[Auth] requireAdmin: User ${username || req.user.id} house is not 'admin' (it is ${house}). Checking role.`);
+
+  // 4. Check role
+  if (role === 'admin') {
+    console.log(`[Auth] requireAdmin: User ${username || req.user.id} authorized based on role 'admin'.`);
+    return next();
+  }
+  console.log(`[Auth] requireAdmin: User ${username || req.user.id} role is not 'admin' (it is ${role}).`);
   
   // If none of the above checks passed, deny access
+  console.log(`[Auth] requireAdmin: Access denied for user ${username || req.user.id}. No admin criteria met.`);
   return res.status(403).json({ 
-    message: 'Admin privileges required',
-    userInfo: {
-      username: username, // Use variable that might be undefined
-      house: req.user.house,
-      role: req.user.role,
-      isUsernameInAdminList: ADMIN_USERS.includes(username), // Re-check for reporting
-      isHouseAdmin: req.user.house === 'admin',
-      isRoleAdmin: req.user.role === 'admin'
+    message: 'Admin privileges required. Access denied.',
+    details: {
+      username: username,
+      house: house,
+      role: role,
+      isAdminFlagInToken: isAdmin, // This is the isAdmin from the token
+      isUsernameInAdminList: username ? ADMIN_USERS_LIST.includes(username) : false,
+      isHouseAdmin: house === 'admin',
+      isRoleAdmin: role === 'admin',
+      adminListSource: ADMIN_USERS_LIST.length > 0 ? `Env (ADMIN_USERS_CSV=${adminUsersEnv})` : 'Not configured or empty'
     }
   });
 };

@@ -81,49 +81,39 @@ router.post('/register', async (req, res) => {
 router.post('/login', async (req, res) => {
   console.log('Login attempt:', {
     username: req.body.username,
-    headers: req.headers
+    // headers: req.headers // Headers can be verbose, log specific ones if needed
   });
 
   try {
     const { username, password } = req.body;
-    
-    // Log authentication steps
-    console.log('Authenticating user:', username);
-    
     const user = await User.findOne({ username });
+
     if (!user) {
-      console.log('User not found:', username);
-      return res.status(400).json({ message: 'User not found' });
+      return res.status(400).json({ message: 'Invalid credentials (user not found)' });
     }
 
-    const validPassword = await bcrypt.compare(password, user.password);
-    if (!validPassword) {
-      console.log('Invalid password for user:', username);
-      return res.status(400).json({ message: 'Invalid password' });
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      return res.status(400).json({ message: 'Invalid credentials (password mismatch)' });
     }
 
-    console.log('Login successful:', username);
+    // Determine admin status based on DB record and ADMIN_USERS list
+    const ADMIN_USERS_LIST = (process.env.ADMIN_USERS_CSV || 'hungpro,vipro').split(',');
+    const isAdmin = ADMIN_USERS_LIST.includes(user.username) || user.role === 'admin' || user.house === 'admin';
+    console.log(`[Login] User: ${user.username}, DB isAdmin check: ${isAdmin}, Role: ${user.role}, House: ${user.house}`);
 
-    // Include additional fields in the token payload
-    const ADMIN_USERS = ['hungpro', 'vipro'];
-    const isAdmin = ADMIN_USERS.includes(username) || user.house === 'admin' || user.role === 'admin';
-
-    // Create user token with complete information
-    const tokenPayload = {
+    const payload = {
       id: user._id,
       username: user.username,
-      house: isAdmin ? 'admin' : (user.house || null),
-      role: isAdmin ? 'admin' : (user.role || 'student'),
-      isAdmin
+      house: user.house,
+      role: user.role,
+      isAdmin: isAdmin, // Ensure this is a boolean
     };
 
-    console.log('Token payload:', tokenPayload);
-    
-    // Sign the token with a 24-hour expiration
     const token = jwt.sign(
-      tokenPayload,
+      payload,
       process.env.JWT_SECRET,
-      { expiresIn: '24h' }
+      { expiresIn: process.env.JWT_EXPIRES_IN || '24h' }
     );
 
     res.json({
@@ -132,15 +122,18 @@ router.post('/login', async (req, res) => {
         id: user._id,
         username: user.username,
         email: user.email,
-        house: isAdmin ? 'admin' : (user.house || null), // Ensure house is admin for admins
-        role: isAdmin ? 'admin' : (user.role || 'student'), // Set admin role
-        isAdmin, // ES6 shorthand
-        magicPoints: user.magicPoints || 100 // Include magic points
+        // If user is determined to be admin, ensure their house/role in the returned object reflects admin status
+        // This doesn't change the DB record here, just the object sent to client for this session.
+        house: isAdmin ? (user.house === 'admin' ? 'admin' : user.house || 'admin') : user.house,
+        role: isAdmin ? (user.role === 'admin' ? 'admin' : user.role || 'admin') : user.role,
+        isAdmin: isAdmin,
+        magicPoints: user.magicPoints !== undefined ? user.magicPoints : 100,
+        // any other fields needed by frontend
       }
     });
   } catch (err) {
     console.error('Login error:', err);
-    res.status(500).json({ message: err.message });
+    res.status(500).json({ message: 'Server error during login', error: err.message });
   }
 });
 
@@ -182,15 +175,30 @@ router.post('/avatar', auth, upload.single('avatar'), async (req, res) => {
 // Verify token validity
 router.get('/verify', auth, async (req, res) => {
   try {
-    // If the auth middleware allowed this request, the token is valid
-    res.json({ 
-      authenticated: true, 
-      userId: req.user.id,
-      timestamp: new Date()
+    // If the auth middleware passed, req.user is populated from the token
+    const userFromDB = await User.findById(req.user.id).select('-password');
+    if (!userFromDB) {
+      return res.status(404).json({ authenticated: false, message: 'User not found based on token ID' });
+    }
+
+    // Re-evaluate admin status based on current DB record for freshness and security
+    const ADMIN_USERS_LIST = (process.env.ADMIN_USERS_CSV || 'hungpro,vipro').split(',');
+    const isAdminDB = ADMIN_USERS_LIST.includes(userFromDB.username) || userFromDB.role === 'admin' || userFromDB.house === 'admin';
+    console.log(`[Verify] User: ${userFromDB.username}, DB isAdmin check: ${isAdminDB}, Role: ${userFromDB.role}, House: ${userFromDB.house}`);
+
+    res.json({
+      authenticated: true,
+      userId: userFromDB._id,
+      username: userFromDB.username,
+      house: userFromDB.house,
+      role: userFromDB.role,
+      isAdmin: isAdminDB, // Use the freshly checked admin status from DB
+      magicPoints: userFromDB.magicPoints !== undefined ? userFromDB.magicPoints : 100,
+      // Add any other fields the frontend expects from verification
     });
   } catch (err) {
-    console.error('[BE] Error in verify endpoint:', err);
-    res.status(500).json({ message: err.message });
+    console.error('Error verifying token:', err);
+    res.status(500).json({ authenticated: false, message: 'Server error during token verification', error: err.message });
   }
 });
 
