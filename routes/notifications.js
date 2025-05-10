@@ -41,11 +41,6 @@ router.post('/', auth, async (req, res) => {
     );
     activeNotifications.length = 0;
     activeNotifications.push(...activeNotificationsFiltered);
-
-    // Use the helper function to send real-time notification
-    if (req.app.locals.sendRealTimeNotification) {
-      req.app.locals.sendRealTimeNotification({ notification }); // Pass the whole notification object
-    }
     
     res.status(201).json(notification);
   } catch (err) {
@@ -98,4 +93,4 @@ router.get('/', auth, async (req, res) => {
   }
 });
 
-module.exports = router;
+module.exports = router; 

@@ -13,22 +13,34 @@ const path = require('path');
 
 const app = express();
 
-// Simplified CORS configuration to prevent conflicts
+// Enhanced CORS configuration for better offline/online synchronization
 app.use(cors({
-  origin: ['https://fe-web-lilac.vercel.app', 'http://localhost:3000', 'https://inequality-web.vercel.app'],
+  origin: [
+    'https://fe-web-lilac.vercel.app',  // Vercel frontend
+    'http://localhost:3000',            // Local development
+    'https://inequality-web.vercel.app', // Alternative frontend URL
+    'https://mw15w-5173.csb.app',       // CodeSandbox URL
+    'capacitor://localhost',            // Mobile app via Capacitor
+    'http://localhost',                 // Alternative local development
+    'http://localhost:8080',            // Another common local port
+    'http://localhost:8100',            // Ionic default port
+    '*'                                 // Allow all origins in development (remove in production)
+  ],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Origin', 'Accept'],
-  credentials: true,
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  credentials: true, // Allow cookies
   preflightContinue: false,
   optionsSuccessStatus: 204
 }));
 
-// Handle OPTIONS requests explicitly 
-app.options('*', cors({
-  origin: ['https://fe-web-lilac.vercel.app', 'http://localhost:3000', 'https://inequality-web.vercel.app'],
-  credentials: true,
-  optionsSuccessStatus: 204
-}));
+// Set additional headers for better CORS handling
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Allow-Origin', req.headers.origin);
+  res.header('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,PATCH,OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin,X-Requested-With,Content-Type,Accept,Authorization');
+  next();
+});
 
 // Increase payload size limit for sync operations with many items
 app.use(express.json({ limit: '5mb' }));
@@ -78,14 +90,12 @@ const socketIO = require('socket.io');
 const server = require('http').createServer(app);
 const io = socketIO(server, {
   cors: {
-    origin: ['https://fe-web-lilac.vercel.app', 'http://localhost:3000', 'https://inequality-web.vercel.app'],
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    origin: '*', // Allow all origins in development
+    methods: ['GET', 'POST'],
     credentials: true
   },
-  pingTimeout: 30000, 
-  pingInterval: 10000,
-  transports: ['websocket', 'polling'] // Explicitly specify transports
+  pingTimeout: 30000, // How long to wait before considering a client disconnected
+  pingInterval: 10000, // How often to ping clients to check connection
 });
 
 // Admin users constant for filtering notifications
@@ -449,41 +459,21 @@ io.on('connection', (socket) => {
     }
   });
   
-  // Handle disconnect with reason and retry logic
-  socket.on('disconnect', (reason) => {
-    console.log(`Client ${socket.id} disconnected. Reason: ${reason}`);
-    
+  // Handle disconnect
+  socket.on('disconnect', () => {
     // Remove user from activeConnections
     if (authenticatedUserId) {
-      // Check if this is the current socket for this user
-      // (user might have multiple connections)
-      const currentSocketId = activeConnections.get(authenticatedUserId);
+      activeConnections.delete(authenticatedUserId);
       
-      if (currentSocketId === socket.id) {
-        // Only remove if this is the current socket
-        activeConnections.delete(authenticatedUserId);
-        
-        // Update online status
-        if (userStatus.has(authenticatedUserId)) {
-          const status = userStatus.get(authenticatedUserId);
-          status.online = false;
-          status.lastSeen = new Date();
-          status.lastDisconnectReason = reason;
-          userStatus.set(authenticatedUserId, status);
-        }
-        
-        console.log(`User ${authenticatedUserId} disconnected`);
-        
-        // Notify admin room about user disconnect
-        io.to('admin').emit('admin_update', {
-          type: 'user_disconnected',
-          userId: authenticatedUserId,
-          reason: reason,
-          timestamp: new Date().toISOString()
-        });
-      } else {
-        console.log(`Socket ${socket.id} disconnected but user ${authenticatedUserId} has another active connection: ${currentSocketId}`);
+      // Update online status
+      if (userStatus.has(authenticatedUserId)) {
+        const status = userStatus.get(authenticatedUserId);
+        status.online = false;
+        status.lastSeen = new Date();
+        userStatus.set(authenticatedUserId, status);
       }
+      
+      console.log(`User ${authenticatedUserId} disconnected`);
     }
     
     console.log(`Client disconnected ${socket.id}, remaining connections: ${activeConnections.size}`);

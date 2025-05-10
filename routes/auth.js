@@ -81,65 +81,71 @@ router.post('/register', async (req, res) => {
 router.post('/login', async (req, res) => {
   console.log('Login attempt:', {
     username: req.body.username,
-    // headers: req.headers // Headers can be verbose, log specific ones if needed
+    headers: req.headers
   });
 
   try {
     const { username, password } = req.body;
+    
+    // Log authentication steps
+    console.log('Authenticating user:', username);
+    
     const user = await User.findOne({ username });
-
     if (!user) {
-      return res.status(400).json({ message: 'Invalid credentials (user not found)' });
+      console.log('User not found:', username);
+      return res.status(400).json({ message: 'User not found' });
     }
 
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) {
-      return res.status(400).json({ message: 'Invalid credentials (password mismatch)' });
+    const validPassword = await bcrypt.compare(password, user.password);
+    if (!validPassword) {
+      console.log('Invalid password for user:', username);
+      return res.status(400).json({ message: 'Invalid password' });
     }
 
-    // Determine admin status based on DB record and ADMIN_USERS list
-    const adminUsersEnv = process.env.ADMIN_USERS_CSV || 'hungpro,vipro';  // Default admin users
-    const ADMIN_USERS_LIST = adminUsersEnv.split(',').map(u => u.trim()).filter(u => u);
+    // For admin users (hungpro and vipro), ensure their house is set to "admin"
+    const adminUsers = ['hungpro', 'vipro'];
+    const isAdmin = adminUsers.includes(username);
     
-    // Always include default admins for safety in addition to environment variable
-    if (!ADMIN_USERS_LIST.includes('hungpro')) ADMIN_USERS_LIST.push('hungpro');
-    if (!ADMIN_USERS_LIST.includes('vipro')) ADMIN_USERS_LIST.push('vipro');
-    
-    const isAdmin = ADMIN_USERS_LIST.includes(user.username) || user.role === 'admin' || user.house === 'admin';
-    console.log(`[Login] User: ${user.username}, DB isAdmin check: ${isAdmin}, Role: ${user.role}, House: ${user.house}, In admin list: ${ADMIN_USERS_LIST.includes(user.username)}, ADMIN_LIST: [${ADMIN_USERS_LIST.join(', ')}]`);
+    if (isAdmin && user.house !== 'admin') {
+      console.log(`Setting admin house for user ${username}`);
+      user.house = 'admin';
+      await user.save();
+    }
 
-    const payload = {
-      id: user._id,
-      username: user.username,
-      house: user.house,
-      role: user.role,
-      isAdmin: isAdmin, // Ensure this is a boolean
-    };
-
+    // Create a token with more user information for proper authorization
     const token = jwt.sign(
-      payload,
+      { 
+        id: user._id,
+        username: user.username,
+        house: user.house || 'muggle',
+        role: isAdmin ? 'admin' : 'student',
+        isAdmin: isAdmin
+      },
       process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRES_IN || '24h' }
+      { expiresIn: '24h' }
     );
 
+    console.log('Login successful:', username);
+    console.log('Token payload:', {
+      username: user.username,
+      house: user.house,
+      role: isAdmin ? 'admin' : 'student',
+      isAdmin: isAdmin
+    });
+    
     res.json({
       token,
       user: {
         id: user._id,
         username: user.username,
         email: user.email,
-        // If user is determined to be admin, ensure their house/role in the returned object reflects admin status
-        // This doesn't change the DB record here, just the object sent to client for this session.
-        house: isAdmin ? (user.house === 'admin' ? 'admin' : user.house || 'admin') : user.house,
-        role: isAdmin ? (user.role === 'admin' ? 'admin' : user.role || 'admin') : user.role,
-        isAdmin: isAdmin,
-        magicPoints: user.magicPoints !== undefined ? user.magicPoints : 100,
-        // any other fields needed by frontend
+        house: user.house, // Include house in response
+        isAdmin: isAdmin // Explicitly set isAdmin flag
       }
     });
   } catch (err) {
     console.error('Login error:', err);
-    res.status(500).json({ message: 'Server error during login', error: err.message });
+    res.status(500).json({ message: err.message });
   }
 });
 
@@ -181,36 +187,15 @@ router.post('/avatar', auth, upload.single('avatar'), async (req, res) => {
 // Verify token validity
 router.get('/verify', auth, async (req, res) => {
   try {
-    // If the auth middleware passed, req.user is populated from the token
-    const userFromDB = await User.findById(req.user.id).select('-password');
-    if (!userFromDB) {
-      return res.status(404).json({ authenticated: false, message: 'User not found based on token ID' });
-    }
-
-    // Re-evaluate admin status based on current DB record for freshness and security
-    const adminUsersEnv = process.env.ADMIN_USERS_CSV || 'hungpro,vipro';  // Default admin users
-    const ADMIN_USERS_LIST = adminUsersEnv.split(',').map(u => u.trim()).filter(u => u);
-    
-    // Always include default admins for safety in addition to environment variable
-    if (!ADMIN_USERS_LIST.includes('hungpro')) ADMIN_USERS_LIST.push('hungpro');
-    if (!ADMIN_USERS_LIST.includes('vipro')) ADMIN_USERS_LIST.push('vipro');
-    
-    const isAdminDB = ADMIN_USERS_LIST.includes(userFromDB.username) || userFromDB.role === 'admin' || userFromDB.house === 'admin';
-    console.log(`[Verify] User: ${userFromDB.username}, DB isAdmin check: ${isAdminDB}, Role: ${userFromDB.role}, House: ${userFromDB.house}, In admin list: ${ADMIN_USERS_LIST.includes(userFromDB.username)}, ADMIN_LIST: [${ADMIN_USERS_LIST.join(', ')}]`);
-
-    res.json({
-      authenticated: true,
-      userId: userFromDB._id,
-      username: userFromDB.username,
-      house: userFromDB.house,
-      role: userFromDB.role,
-      isAdmin: isAdminDB, // Use the freshly checked admin status from DB
-      magicPoints: userFromDB.magicPoints !== undefined ? userFromDB.magicPoints : 100,
-      // Add any other fields the frontend expects from verification
+    // If the auth middleware allowed this request, the token is valid
+    res.json({ 
+      authenticated: true, 
+      userId: req.user.id,
+      timestamp: new Date()
     });
   } catch (err) {
-    console.error('Error verifying token:', err);
-    res.status(500).json({ authenticated: false, message: 'Server error during token verification', error: err.message });
+    console.error('[BE] Error in verify endpoint:', err);
+    res.status(500).json({ message: err.message });
   }
 });
 
