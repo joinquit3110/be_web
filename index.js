@@ -10,6 +10,7 @@ const magicPointsRoutes = require('./routes/magicPoints');
 const userRoutes = require('./routes/users');
 const notificationsRoutes = require('./routes/notifications');
 const path = require('path');
+const { createHousePointsNotification, formatHousePointsMessage } = require('./utils/notifications');
 
 const app = express();
 
@@ -303,19 +304,13 @@ io.on('connection', (socket) => {
     
     console.log(`Admin updating ${house} points by ${points}. Reason: ${reason}`);
     
-    const notification = {
-      id: `house_points_${house}_${points}_${Date.now()}`,
-      type: points > 0 ? 'success' : 'warning',
-      title: points > 0 ? 'POINTS AWARDED!' : 'POINTS DEDUCTED!',
-      message: formatHousePointsMessage(house, points, reason, criteria, level),
-      timestamp: new Date().toISOString(),
-      points,
-      reason,
-      criteria,
-      level
-    };
+    // Sử dụng hàm tạo thông báo chuẩn hóa
+    const notification = createHousePointsNotification(house, points, reason, criteria, level);
     
-    sendNotification(house, notification);
+    // Gửi thông báo cho room (nhà)
+    io.to(house).emit('notification', notification);
+    
+    console.log(`Sent house points notification to ${house}`);
   });
   
   // NEW: Handle admin targeted notification
@@ -389,15 +384,20 @@ io.on('connection', (socket) => {
           // Use the same function that server-side updates use
           console.log(`[SOCKET] User ${authenticatedUserId} is admin, broadcasting house points update`);
           
-          app.locals.broadcastHousePointsUpdate(
+          // Tạo thông báo chuẩn hóa
+          const notification = createHousePointsNotification(
             house, 
             points, 
-            newTotal || null, 
             reason || 'Admin action', 
-            false, // Don't skip admin
             criteria, 
-            level
+            level,
+            newTotal
           );
+          
+          // Gửi thông báo trực tiếp đến room (nhà)
+          io.to(house).emit('notification', notification);
+          
+          console.log(`[SOCKET] Sent house points notification to ${house}`);
         } else {
           console.log(`[SOCKET] Rejected house notification from non-admin user: ${authenticatedUserId}`);
           // Send a notice back to the user that they lack permission
@@ -618,21 +618,6 @@ app.locals.broadcastHousePointsUpdate = (house, pointChange, newTotal, reason, s
     // Debug logging
     console.log(`[HOUSE_POINTS] Broadcasting update to ${house}: ${pointChange} points`);
     console.log(`[HOUSE_POINTS] Active connections: ${activeConnections.size}`);
-    console.log(`[HOUSE_POINTS] Connected users in ${house} house:`);
-    
-    // Log all users in this house
-    const usersInHouse = [];
-    for (const [userId, status] of userStatus.entries()) {
-      if (status.house === house) {
-        usersInHouse.push({
-          userId,
-          online: status.online,
-          username: status.username,
-          socketId: activeConnections.get(userId)
-        });
-      }
-    }
-    console.log(`[HOUSE_POINTS] Users in ${house}: ${JSON.stringify(usersInHouse)}`);
     
     // Check if we've broadcasted this same update recently (within 10 seconds)
     if (recentHousePointsUpdates.has(updateKey)) {
@@ -654,40 +639,15 @@ app.locals.broadcastHousePointsUpdate = (house, pointChange, newTotal, reason, s
       }
     }
     
-    // Extract criteria and level from arguments or reason if available
-    let _criteria = criteria;
-    let _level = level;
-    if (!_criteria || !_level) {
-      if (reason) {
-        const criteriaMatch = reason.match(/[Cc]riteria:?:?\s*(.+?)(?=\.|$|\s*Level:|\s*Reason:)/);
-        if (criteriaMatch) _criteria = criteriaMatch[1].trim();
-        const levelMatch = reason.match(/[Ll]evel:?:?\s*(.+?)(?=\.|$|\s*Criteria:|\s*Reason:)/);
-        if (levelMatch) _level = levelMatch[1].trim();
-      }
-    }
-    
-    // Create a consistent timestamp for all notifications
-    const timestamp = new Date().toISOString();
-    
-    // Common notification data
-    const notificationData = {
-      house,
-      points: pointChange,
-      newTotal,
-      reason: reason || 'Admin action',
-      criteria: _criteria,
-      level: _level,
-      timestamp,
-      uniqueId: `house_points_${house}_${pointChange}_${Date.now()}`
-    };
-    
-    // Create a broadcast function to ensure consistent data format
-    const emitNotification = (socketId) => {
-      io.to(socketId).emit('house_points_update', {
-        ...notificationData,
-        skipAdmin: skipAdmin === "true" || skipAdmin === true
-      });
-    };
+    // Tạo thông báo chuẩn hóa
+    const notification = createHousePointsNotification(
+      house, 
+      pointChange, 
+      reason || 'Admin action', 
+      criteria, 
+      level,
+      newTotal
+    );
     
     if (skipAdmin === "true" || skipAdmin === true) {
       // Send individually to non-admin users in the house
@@ -700,25 +660,20 @@ app.locals.broadcastHousePointsUpdate = (house, pointChange, newTotal, reason, s
         // Get the user status
         const user = userStatus.get(userIdStr);
         
-        // Log detailed user info for debugging
-        console.log(`[HOUSE_POINTS] Checking user ${userIdStr}: House=${user?.house}, IsAdmin=${ADMIN_USERS.includes(user?.username)}, SocketId=${socketId}, Online=${user?.online}`);
-        
         if (user && user.house === house && !ADMIN_USERS.includes(user.username) && !sentTo.has(userIdStr)) {
           sentTo.add(userIdStr); // Mark as sent to prevent duplicates
           
-          // Use the emitNotification function with consistent data
-          emitNotification(socketId);
+          // Gửi thông báo đến người dùng cụ thể
+          io.to(socketId).emit('notification', notification);
           
-          console.log(`[HOUSE_POINTS] Sent house points update to ${userIdStr} in ${house}`);
+          console.log(`[HOUSE_POINTS] Sent house points notification to ${userIdStr} in ${house}`);
         }
       }
       
       return sentTo.size > 0; // Return true if we sent to at least one user
     } else {
       // Send to all in the house - use a room message
-      io.to(house).emit('house_points_update', {
-        ...notificationData
-      });
+      io.to(house).emit('notification', notification);
       
       return true;
     }
@@ -760,34 +715,6 @@ app.locals.updateUserInRealTime = (userId, updatedFields) => {
     console.error('Error updating user in real-time:', error);
     return false;
   }
-};
-
-// Helper to format house points message
-const formatHousePointsMessage = (house, points, reason, criteria, level) => {
-  // Start with base message
-  let message = `House ${house} has ${points > 0 ? 'gained' : 'lost'} ${Math.abs(points)} points!`;
-  
-  // Add details in a consistent format
-  const details = [];
-  
-  if (reason && reason !== 'Admin action' && reason.trim() !== '') {
-    details.push(`Reason: ${reason}`);
-  }
-  
-  if (criteria && criteria !== null && criteria.trim() !== '') {
-    details.push(`Criteria: ${criteria}`);
-  }
-  
-  if (level && level !== null && level.trim() !== '') {
-    details.push(`Level: ${level}`);
-  }
-  
-  // Join all details with periods
-  if (details.length > 0) {
-    message += `. ${details.join('. ')}`;
-  }
-  
-  return message;
 };
 
 // Add version prefix to all routes

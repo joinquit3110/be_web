@@ -2,6 +2,7 @@ const router = require('express').Router();
 const auth = require('../middleware/auth');
 const User = require('../models/User');
 const mongoose = require('mongoose');
+const { createHousePointsNotification } = require('../utils/notifications');
 
 // In-memory storage for active notifications (in a real app, use a database or message queue)
 const activeNotifications = [];
@@ -12,24 +13,44 @@ const ADMIN_USERS = ['hungpro', 'vipro'];
 // Create a notification
 router.post('/', auth, async (req, res) => {
   try {
-    const { type, title, message, targetUsers, housesAffected, skipAdmin } = req.body;
+    const { type, title, message, targetUsers, housesAffected, skipAdmin, 
+            house, points, reason, criteria, level } = req.body;
     
-    if (!type || !message) {
-      return res.status(400).json({ message: 'Type and message are required fields' });
+    let notification;
+    
+    // Xử lý thông báo house points
+    if (type === 'house_points' && house && points !== undefined) {
+      notification = createHousePointsNotification(
+        house, 
+        parseInt(points), 
+        reason, 
+        criteria, 
+        level
+      );
+      
+      // Thêm thông tin nhắm mục tiêu
+      notification.targetUsers = targetUsers || []; 
+      notification.housesAffected = [house];
+      notification.skipAdmin = skipAdmin === "true" || skipAdmin === true;
+      notification.expiresAt = new Date(Date.now() + 60000); // 1 minute
+    } else {
+      // Thông báo thông thường
+      if (!type || !message) {
+        return res.status(400).json({ message: 'Type and message are required fields' });
+      }
+      
+      notification = {
+        id: new mongoose.Types.ObjectId().toString(),
+        type, // success, warning, error, info
+        title: title || (type === 'success' ? 'Success' : 'Notification'),
+        message,
+        timestamp: new Date().toISOString(),
+        targetUsers: targetUsers || [], // If empty, notify all users
+        housesAffected: housesAffected || [], // If specified, notify all users in these houses
+        skipAdmin: skipAdmin === "true" || skipAdmin === true, // Store the skipAdmin flag
+        expiresAt: new Date(Date.now() + 30000) // Expires in 30 seconds
+      };
     }
-    
-    // Create a new notification
-    const notification = {
-      id: new mongoose.Types.ObjectId().toString(),
-      type, // success, warning, error, info
-      title: title || (type === 'success' ? 'Success' : 'Notification'),
-      message,
-      timestamp: new Date().toISOString(),
-      targetUsers: targetUsers || [], // If empty, notify all users
-      housesAffected: housesAffected || [], // If specified, notify all users in these houses
-      skipAdmin: skipAdmin === "true" || skipAdmin === true, // Store the skipAdmin flag
-      expiresAt: new Date(Date.now() + 30000) // Expires in 30 seconds
-    };
     
     // Add to active notifications
     activeNotifications.push(notification);
@@ -41,6 +62,16 @@ router.post('/', auth, async (req, res) => {
     );
     activeNotifications.length = 0;
     activeNotifications.push(...activeNotificationsFiltered);
+    
+    // Nếu là thông báo house points, gửi qua socket
+    if (type === 'house_points' && house) {
+      // Lấy socket.io từ app
+      const io = req.app.get('io');
+      if (io) {
+        io.to(house).emit('notification', notification);
+        console.log(`Sent house points notification to ${house} via REST API`);
+      }
+    }
     
     res.status(201).json(notification);
   } catch (err) {
